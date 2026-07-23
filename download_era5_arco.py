@@ -42,8 +42,8 @@ def download_era5(time_range=TIME_RANGE, out_dir='data'):
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     single_path   = f'{out_dir}/era5_single_level_{ts}.nc'
     pressure_path = f'{out_dir}/era5_pressure_level_{ts}.nc'
-    ds_single.to_netcdf(single_path)
-    ds_pressure.to_netcdf(pressure_path)
+    ds_single.to_netcdf(single_path, format='NETCDF4')
+    ds_pressure.to_netcdf(pressure_path, format='NETCDF4')
     print(f"Done! Saved:\n  {single_path}\n  {pressure_path}")
 
     return single_path, pressure_path
