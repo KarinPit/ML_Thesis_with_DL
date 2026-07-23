@@ -2,10 +2,11 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 from sklearn.metrics import classification_report, roc_auc_score
+from datetime import datetime
 
-def train_lightgbm():
+def train_lightgbm(parquet_path, out_dir='data'):
     # load tabular data
-    df = pd.read_parquet('data/case6/tabular_dataset.parquet')
+    df = pd.read_parquet(parquet_path)
     print(f"Loaded dataset: {df.shape[0]} rows × {df.shape[1]} columns")
 
     # define features and target. Binary target: 1 if any lightning in the cell, 0 otherwise
@@ -67,10 +68,12 @@ def train_lightgbm():
     print(importance.nlargest(20).to_string())
 
     # save model
-    model.booster_.save_model('data/case6/lightgbm_model.txt')
-    print("\nModel saved to data/case6/lightgbm_model.txt")
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    model_path = f'{out_dir}/lightgbm_model_{ts}.txt'
+    model.booster_.save_model(model_path)
+    print(f"\nModel saved to {model_path}")
 
     return model
 
 if __name__ == "__main__":
-    train_lightgbm()
+    train_lightgbm(parquet_path='data/tabular_dataset.parquet')

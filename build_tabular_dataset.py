@@ -1,12 +1,13 @@
 import numpy as np
 import pandas as pd
 import xarray as xr
+from datetime import datetime
 
-def build_tabular_dataset():
+def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, out_dir='data'):
     # Load NetCDF files
-    ds_single   = xr.open_dataset('data/case6/era5_single_level_sample.nc')
-    ds_pressure = xr.open_dataset('data/case6/era5_pressure_level_sample.nc')
-    ds_lightning = xr.open_dataset('data/case6/entln_on_era5_grid.nc')
+    ds_single    = xr.open_dataset(era5_single_path)
+    ds_pressure  = xr.open_dataset(era5_pressure_path)
+    ds_lightning = xr.open_dataset(lightning_path)
     
     # shared coordinates
     times  = ds_single.time.values
@@ -51,10 +52,16 @@ def build_tabular_dataset():
           f"{len(ds_pressure.data_vars) * len(levels)} pressure-level + 3 index + 1 target)")
 
     # Save
-    df.to_parquet('data/case6/tabular_dataset.parquet', index=False)
-    print("\nSaved to data/case6/tabular_dataset.parquet")
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    out_path = f'{out_dir}/tabular_dataset_{ts}.parquet'
+    df.to_parquet(out_path, index=False)
+    print(f"\nSaved to {out_path}")
 
-    return df
+    return df, out_path
 
 if __name__ == "__main__":
-    df = build_tabular_dataset()
+    build_tabular_dataset(
+        era5_single_path='data/era5_single_level_sample.nc',
+        era5_pressure_path='data/era5_pressure_level_sample.nc',
+        lightning_path='data/ildn_on_era5_grid.nc',
+    )
