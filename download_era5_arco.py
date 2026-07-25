@@ -39,7 +39,9 @@ def download_era5(time_range=TIME_RANGE, out_dir='data'):
     print("Downloading pressure-level variables (all 37 levels)...")
     ds_pressure = ds[PRESSURE_LEVEL_VARS].sel(time=time_range, **spatial).compute()
 
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    start_year = datetime.fromisoformat(time_range.start).year
+    end_year   = datetime.fromisoformat(time_range.stop).year
+    ts = f"{start_year}_{end_year}" if end_year != start_year else str(start_year)
     single_path   = f'{out_dir}/era5_single_level_{ts}.nc'
     pressure_path = f'{out_dir}/era5_pressure_level_{ts}.nc'
     ds_single.to_netcdf(single_path, format='NETCDF4')

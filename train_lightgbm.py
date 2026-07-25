@@ -68,7 +68,10 @@ def train_lightgbm(parquet_path, out_dir='data'):
     print(importance.nlargest(20).to_string())
 
     # save model
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    times = pd.to_datetime(df['time'])
+    start_year = times.dt.year.min()
+    end_year   = times.dt.year.max()
+    ts = f"{start_year}_{end_year}" if end_year != start_year else str(start_year)
     model_path = f'{out_dir}/lightgbm_model_{ts}.txt'
     model.booster_.save_model(model_path)
     print(f"\nModel saved to {model_path}")

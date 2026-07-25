@@ -52,7 +52,9 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, 
           f"{len(ds_pressure.data_vars) * len(levels)} pressure-level + 3 index + 1 target)")
 
     # Save
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    start_year = pd.Timestamp(times[0]).year
+    end_year   = pd.Timestamp(times[-1]).year
+    ts = f"{start_year}_{end_year}" if end_year != start_year else str(start_year)
     out_path = f'{out_dir}/tabular_dataset_{ts}.parquet'
     df.to_parquet(out_path, index=False)
     print(f"\nSaved to {out_path}")

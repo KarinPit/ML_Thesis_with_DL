@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import xarray as xr
-from datetime import datetime
 
 def build_lightning_grid(ildn_path, era5_single_path, out_dir='data'):
     # load ILDN lightning data
@@ -61,7 +60,9 @@ def build_lightning_grid(ildn_path, era5_single_path, out_dir='data'):
         attrs={'units': 'count per ERA5 cell per hour', 'source': 'ILDN'}
     )
 
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    start_year = era5_hours.min().year
+    end_year   = era5_hours.max().year
+    ts = f"{start_year}_{end_year}" if end_year != start_year else str(start_year)
     out_path = f'{out_dir}/ildn_on_era5_grid_{ts}.nc'
     lightning_da.to_netcdf(out_path)
     print(f"\nSaved to {out_path}")
