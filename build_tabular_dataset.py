@@ -63,7 +63,7 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, 
 
 if __name__ == "__main__":
     build_tabular_dataset(
-        era5_single_path='data/era5_single_level_sample.nc',
-        era5_pressure_path='data/era5_pressure_level_sample.nc',
-        lightning_path='data/ildn_on_era5_grid.nc',
+        era5_single_path='data/era5_single_level_2024.nc',
+        era5_pressure_path='data/era5_pressure_level_2024.nc',
+        lightning_path='data/ildn_on_era5_grid_2024.nc',
     )
