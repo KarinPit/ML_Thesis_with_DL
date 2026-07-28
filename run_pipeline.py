@@ -5,11 +5,11 @@ from train_lightgbm import train_lightgbm
 
 # configuration
 # Time range for ERA5 download
-TIME_START = '2024-01-01T00:00'
-TIME_END   = '2024-12-31T23:00'
+TIME_START = '2023-01-01T00:00'
+TIME_END   = '2023-12-31T23:00'
 
 # Path(s) to ILDN lightning data file(s)
-ILDN_PATH = 'data/2024_for_yoav_including_cloud.txt'
+ILDN_PATH = 'data/2023_for_yoav_including_cloud.txt'
 
 # Output directory for all generated files
 OUT_DIR = 'data'
