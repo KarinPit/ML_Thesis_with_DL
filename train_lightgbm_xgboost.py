@@ -4,7 +4,6 @@ import lightgbm as lgb
 import xgboost as xgb
 from sklearn.metrics import classification_report, roc_auc_score, precision_recall_curve, roc_curve
 import matplotlib
-matplotlib.use('Agg')  # no display needed — saves to file
 import matplotlib.pyplot as plt
 
 # Minimum recall we're willing to accept when optimizing the threshold.
@@ -175,6 +174,6 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
 
 if __name__ == "__main__":
     train_lightgbm_and_xgboost(
-        train_parquet_path='data/tabular_dataset_2024_balanced.parquet',
+        train_parquet_path='data/tabular_dataset_2023_2024_balanced.parquet',
         test_parquet_path='data/tabular_dataset_2025.parquet',
     )

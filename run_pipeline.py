@@ -1,7 +1,7 @@
 from download_era5_arco import download_era5
 from ildn_to_era5_grid import build_lightning_grid
 from build_tabular_dataset import build_tabular_dataset
-from train_lightgbm import train_lightgbm
+from train_lightgbm_xgboost import train_lightgbm_and_xgboost
 
 # configuration
 # Time range for ERA5 download
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("STEP 4: Training LightGBM")
     print("=" * 60)
-    train_lightgbm(
+    train_lightgbm_and_xgboost(
         parquet_path=parquet_path,
         out_dir=OUT_DIR,
     )

@@ -1,8 +1,8 @@
 import pandas as pd
 
 # ── configuration ─────────────────────────────────────────────────────────────
-INPUT_PARQUET  = 'data/tabular_dataset_2025.parquet'
-OUTPUT_PARQUET = 'data/tabular_dataset_2025_balanced.parquet'
+INPUT_PARQUET  = 'data/tabular_dataset_2023.parquet'
+OUTPUT_PARQUET = 'data/tabular_dataset_2023_balanced.parquet'
 RATIO = 1  # no-lightning rows per lightning row (1 = 50/50)
 RANDOM_STATE = 42
 # ──────────────────────────────────────────────────────────────────────────────
