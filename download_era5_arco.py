@@ -23,6 +23,9 @@ PRESSURE_LEVEL_VARS = [
     'temperature',
     'specific_humidity',
     'vertical_velocity',
+    'geopotential',
+    'specific_cloud_ice_water_content',
+    'specific_cloud_liquid_water_content',
 ]
 
 def download_era5(time_range=TIME_RANGE, out_dir='data'):

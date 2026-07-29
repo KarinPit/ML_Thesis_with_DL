@@ -1,5 +1,6 @@
 from download_era5_arco import download_era5
 from ildn_to_era5_grid import build_lightning_grid
+from calculate_lpi import compute_and_save_lpi
 from build_tabular_dataset import build_tabular_dataset
 from train_lightgbm_xgboost import train_lightgbm_and_xgboost
 
@@ -34,17 +35,27 @@ if __name__ == "__main__":
     )
 
     print("\n" + "=" * 60)
-    print("STEP 3: Building tabular dataset")
+    print("STEP 3: Computing proxy LPI")
+    print("=" * 60)
+    lpi_path = compute_and_save_lpi(
+        pressure_path=era5_pressure_path,
+        single_path=era5_single_path,
+        out_dir=OUT_DIR,
+    )
+
+    print("\n" + "=" * 60)
+    print("STEP 4: Building tabular dataset")
     print("=" * 60)
     _, parquet_path = build_tabular_dataset(
         era5_single_path=era5_single_path,
         era5_pressure_path=era5_pressure_path,
         lightning_path=lightning_path,
+        lpi_path=lpi_path,
         out_dir=OUT_DIR,
     )
 
     print("\n" + "=" * 60)
-    print("STEP 4: Training LightGBM")
+    print("STEP 5: Training LightGBM + XGBoost")
     print("=" * 60)
     train_lightgbm_and_xgboost(
         parquet_path=parquet_path,

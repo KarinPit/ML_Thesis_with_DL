@@ -3,7 +3,7 @@ import pandas as pd
 import xarray as xr
 from datetime import datetime
 
-def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, out_dir='data'):
+def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, out_dir='data', lpi_path=None):
     # Load NetCDF files
     ds_single    = xr.open_dataset(era5_single_path)
     ds_pressure  = xr.open_dataset(era5_pressure_path)
@@ -41,6 +41,12 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, 
         for lev_idx, level in enumerate(levels):
             chunks[f"{var}_{int(level)}hPa"] = arr[:, lev_idx, :, :].ravel()
         print(f"  Added pressure-level: {var} × {len(levels)} levels")
+
+    # proxy LPI (optional)
+    if lpi_path is not None:
+        ds_lpi = xr.open_dataset(lpi_path)
+        chunks['proxy_lpi'] = ds_lpi['proxy_lpi'].values.ravel()
+        print("  Added proxy_lpi")
 
     # lightning target column
     chunks['lightning_count'] = ds_lightning['lightning_count'].values.ravel()
