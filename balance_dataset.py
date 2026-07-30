@@ -1,33 +1,68 @@
 import pandas as pd
+import pyarrow.parquet as pq
 
 # ── configuration ─────────────────────────────────────────────────────────────
-INPUT_PARQUET  = 'data/tabular_dataset_2023.parquet'
-OUTPUT_PARQUET = 'data/tabular_dataset_2023_balanced.parquet'
-RATIO = 1  # no-lightning rows per lightning row (1 = 50/50)
+RATIO        = 1      # no-lightning rows per lightning row (1 = 50/50)
+CHUNK_SIZE   = 50000  # rows per chunk when scanning the parquet
 RANDOM_STATE = 42
 # ──────────────────────────────────────────────────────────────────────────────
 
-def balance_dataset(input_path=INPUT_PARQUET, output_path=OUTPUT_PARQUET,
+
+def balance_dataset(input_path, output_path,
                     ratio=RATIO, random_state=RANDOM_STATE):
-    df = pd.read_parquet(input_path)
-    print(f"Loaded: {df.shape[0]} rows × {df.shape[1]} columns")
 
-    df['lightning_binary'] = (df['lightning_count'] > 0).astype(int)
-    print(f"Lightning: {df['lightning_binary'].sum()} rows "
-          f"({df['lightning_binary'].mean()*100:.2f}%)")
+    parquet_file = pq.ParquetFile(input_path)
+    total_rows = parquet_file.metadata.num_rows
+    print(f"Total rows in parquet: {total_rows:,}")
 
-    pos = df[df['lightning_binary'] == 1]
-    neg = df[df['lightning_binary'] == 0].sample(n=len(pos) * ratio, random_state=random_state)
+    # ── Pass 1: collect all lightning rows + count no-lightning rows ──────────
+    print("Pass 1: scanning for lightning rows...")
+    lightning_chunks = []
+    n_neg = 0
 
+    for batch in parquet_file.iter_batches(batch_size=CHUNK_SIZE):
+        df_chunk = batch.to_pandas()
+        is_lightning = df_chunk['lightning_count'] > 0
+        lightning_chunks.append(df_chunk[is_lightning])
+        n_neg += (~is_lightning).sum()
+
+    pos = pd.concat(lightning_chunks, ignore_index=True)
+    n_pos = len(pos)
+    n_neg_target = n_pos * ratio
+    print(f"Lightning rows: {n_pos:,}  |  No-lightning rows: {n_neg:,}")
+    print(f"Sampling {n_neg_target:,} no-lightning rows ({ratio}:1 ratio)")
+
+    # ── Pass 2: proportionally sample no-lightning rows ───────────────────────
+    print("Pass 2: sampling no-lightning rows...")
+    sample_fraction = n_neg_target / n_neg
+    neg_chunks = []
+
+    for batch in parquet_file.iter_batches(batch_size=CHUNK_SIZE):
+        df_chunk = batch.to_pandas()
+        neg_chunk = df_chunk[df_chunk['lightning_count'] == 0]
+        if len(neg_chunk) > 0:
+            n_sample = max(1, round(len(neg_chunk) * sample_fraction))
+            neg_chunks.append(neg_chunk.sample(n=min(n_sample, len(neg_chunk)),
+                                                random_state=random_state))
+
+    neg = pd.concat(neg_chunks, ignore_index=True)
+
+    # ── Combine, shuffle, save ────────────────────────────────────────────────
     df_balanced = pd.concat([pos, neg]).sample(frac=1, random_state=random_state).reset_index(drop=True)
-    print(f"\nBalanced dataset: {len(df_balanced)} rows "
-          f"({df_balanced['lightning_binary'].sum()} lightning, "
-          f"{(df_balanced['lightning_binary'] == 0).sum()} no-lightning)")
+    df_balanced['lightning_binary'] = (df_balanced['lightning_count'] > 0).astype(int)
+
+    print(f"\nBalanced dataset: {len(df_balanced):,} rows "
+          f"({df_balanced['lightning_binary'].sum():,} lightning, "
+          f"{(df_balanced['lightning_binary'] == 0).sum():,} no-lightning)")
 
     df_balanced.to_parquet(output_path, index=False)
     print(f"Saved to {output_path}")
 
     return df_balanced
 
+
 if __name__ == "__main__":
-    balance_dataset()
+    year = '2024'
+    input_parquet  = f'data/tabular_dataset_{year}.parquet'
+    output_parquet = f'data/tabular_dataset_{year}_balanced.parquet'
+    balance_dataset(input_path=input_parquet, output_path=output_parquet)
