@@ -5,9 +5,9 @@ from datetime import datetime
 
 def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, out_dir='data', lpi_path=None):
     # Load NetCDF files
-    ds_single    = xr.open_dataset(era5_single_path)
-    ds_pressure  = xr.open_dataset(era5_pressure_path)
-    ds_lightning = xr.open_dataset(lightning_path)
+    ds_single    = xr.open_dataset(era5_single_path, chunks={'time': 100})
+    ds_pressure  = xr.open_dataset(era5_pressure_path, chunks={'time': 100})
+    ds_lightning = xr.open_dataset(lightning_path, chunks={'time': 100})
     
     # shared coordinates
     times  = ds_single.time.values

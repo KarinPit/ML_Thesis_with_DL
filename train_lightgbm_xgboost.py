@@ -133,7 +133,8 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
         callbacks=[lgb.early_stopping(50), lgb.log_evaluation(50)],
     )
     lgb_proba = lgb_model.predict_proba(X_test)[:, 1]
-    evaluate_model('LightGBM', y_test, lgb_proba, feature_cols, lgb_model.feature_importances_, ts, out_dir)
+    evaluate_model('LightGBM', y_test, lgb_proba, feature_cols,
+                   lgb_model.booster_.feature_importance(importance_type='gain'), ts, out_dir)
 
     lgb_model_path = f'{out_dir}/lightgbm_model_{ts}.txt'
     lgb_model.booster_.save_model(lgb_model_path)

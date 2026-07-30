@@ -1,11 +1,12 @@
 import numpy as np
 import xarray as xr
+import re
 
 
 def calculate_proxy_lpi(ds):
     """Calculate proxy Lightning Potential Index (LPI) from ERA5 pressure-level data.
 
-    Adapted from Yair et al. (2010) by the thesis mentor.
+    Adapted from Yair et al. (2010).
     Substitution: specific_cloud_liquid_water_content (clwc) is used in place of
     specific_snow_water_content, as supercooled liquid water droplets are the key
     participant in non-inductive charge separation alongside ice crystals.
@@ -69,7 +70,7 @@ def calculate_proxy_lpi(ds):
     integrand_zone = (w_up * micro_term).where(in_charging_zone, 0.0)
 
     # vertical integration over pressure levels (trapezoid rule)
-    integral = integrand_zone.integrate(dim='level')
+    integral = integrand_zone.integrate(coord='level')
 
     # normalize by charging layer depth
     proxy_lpi = integral / delta_Z
@@ -93,10 +94,10 @@ def compute_and_save_lpi(pressure_path, single_path, out_dir='data'):
     out_dir       : str  output directory
     """
     print(f"Loading pressure-level data from {pressure_path}...")
-    ds_pressure = xr.open_dataset(pressure_path)
+    ds_pressure = xr.open_dataset(pressure_path, chunks={'time': 100})
 
     print(f"Loading single-level data from {single_path}...")
-    ds_single = xr.open_dataset(single_path)
+    ds_single = xr.open_dataset(single_path,  chunks={'time': 100})
 
     # merge CAPE into pressure dataset so calculate_proxy_lpi sees everything in one ds
     ds = ds_pressure.assign(
@@ -108,7 +109,6 @@ def compute_and_save_lpi(pressure_path, single_path, out_dir='data'):
     lpi.name = 'proxy_lpi'
 
     # derive timestamp from filename years
-    import re
     match = re.search(r'(\d{4}(?:_\d{4})?)', pressure_path)
     ts = match.group(1) if match else 'unknown'
 
@@ -118,9 +118,19 @@ def compute_and_save_lpi(pressure_path, single_path, out_dir='data'):
 
     return out_path
 
+def validate_values(file_path):
+    lpi = xr.open_dataset(file_path)['proxy_lpi']
+    print("Min:", float(lpi.min()))
+    print("Max:", float(lpi.max()))
+    print("Mean:", float(lpi.mean()))
+    print("% zeros:", float((lpi == 0).mean()) * 100)
+    print("% NaN:", float(np.isnan(lpi).mean()) * 100)
+
 
 if __name__ == "__main__":
-    compute_and_save_lpi(
-        pressure_path='data/era5_pressure_level_2025.nc',
-        single_path='data/era5_single_level_2025.nc',
+    out_path = compute_and_save_lpi(
+        pressure_path='data/era5_pressure_level_2024.nc',
+        single_path='data/era5_single_level_2024.nc',
     )
+
+    # validate_values(out_path)
