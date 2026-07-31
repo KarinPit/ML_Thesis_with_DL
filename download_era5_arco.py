@@ -93,5 +93,18 @@ def download_era5(time_range, out_dir='data'):
 
 
 if __name__ == "__main__":
+    # ── Modern ILDN years (full year) ─────────────────────────────────────────
+    # time_range = slice('2023-01-01T00:00', '2023-12-31T23:00')
+    # time_range = slice('2024-01-01T00:00', '2024-12-31T23:00')
+    # time_range = slice('2025-01-01T00:00', '2025-12-31T23:00')
+
+    # ── LPATS years (partial — only months with lightning data) ───────────────
+    # Uncomment the year you want to download:
+    # time_range = slice('2004-09-01T00:00', '2004-12-31T23:00')  # 2004: Sep-Dec
+    # time_range = slice('2005-01-01T00:00', '2005-11-30T23:00')  # 2005: Jan-Nov
+    # time_range = slice('2006-01-01T00:00', '2006-08-31T23:00')  # 2006: Jan-Aug
+    # time_range = slice('2008-09-01T00:00', '2008-12-31T23:00')  # 2008: Sep-Dec
+    # time_range = slice('2009-01-01T00:00', '2009-09-30T23:00')  # 2009: Jan-Sep
+
     time_range = slice('2025-01-01T00:00', '2025-12-31T23:00')
     download_era5(time_range=time_range)

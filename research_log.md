@@ -197,11 +197,38 @@ LPI will be computed as a new script (`calculate_lpi.py`) after ERA5 download an
 
 ---
 
+---
+
+## Experiment 2 — Train: 2023 (with LPI + new variables), Test: 2025
+
+*Date: July 2026*
+
+### Changes vs Experiment 1
+- Added 3 new pressure-level variables: `geopotential`, `specific_cloud_ice_water_content`, `specific_cloud_liquid_water_content`
+- Added `proxy_lpi` as a feature column
+
+### Results
+Metrics virtually identical to Experiment 1 (ROC-AUC: LightGBM 0.9095, XGBoost 0.9072). The proxy LPI did not appear in the top 50 most important features for either model.
+
+### Key Finding: Proxy LPI adds no predictive value
+The proxy LPI is computed from vertical velocity, cloud ice, cloud liquid water, and CAPE — all of which are already present as raw features. The model can already capture their combined effect directly, so the derived LPI index is redundant. This is a valid scientific finding: **the raw ERA5 variables carry the full predictive signal; the LPI does not add information beyond what is already available to the model.**
+
+---
+
+## Current Modeling Assumption: Synchronous Prediction (T → T)
+
+The current setup predicts lightning occurrence at time T using atmospheric variables **at the same time T**. This is a diagnostic relationship — the model learns the atmospheric state associated with lightning, not a forecast.
+
+### Future Direction: Lagged Prediction (T-k → T)
+A natural next step is to shift the atmospheric features back by k hours (T-1, T-2, etc.) and predict lightning at time T. This would turn the model into a genuine **short-range forecast** — predicting whether lightning will occur in the next 1-3 hours based on current atmospheric state.
+
+This is more operationally useful but harder, since the atmospheric signal at T-1 is weaker than at T. Testing both approaches and comparing skill scores would be a strong thesis contribution.
+
+---
+
 ## Next Steps
-- [ ] Add `geopotential`, `specific_cloud_ice_water_content`, `specific_cloud_liquid_water_content` to `download_era5_arco.py` and re-download all years
-- [ ] Create `calculate_lpi.py` using mentor's proxy LPI function with clwc substitution
-- [ ] Integrate LPI into `build_tabular_dataset.py` as a feature column
 - [ ] Download ERA5 for additional years (confirm which years have ILDN/ENTLN data)
-- [ ] Train on larger multi-year dataset with LPI feature, re-evaluate metrics
+- [ ] Train on larger multi-year dataset, re-evaluate metrics
 - [ ] Consider dropping stratospheric features (>100hPa) based on feature importance analysis
+- [ ] Test lagged prediction (T-1, T-2 atmospheric features → T lightning)
 - [ ] Meet with Vlad to discuss results and U-Net next steps
