@@ -2,13 +2,44 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import xgboost as xgb
+import pyarrow.parquet as pq
 from sklearn.metrics import classification_report, roc_auc_score, precision_recall_curve, roc_curve
 import matplotlib
+matplotlib.use('Agg')  # no display needed — saves to file
 import matplotlib.pyplot as plt
+import re
 
 # Minimum recall we're willing to accept when optimizing the threshold.
-# The threshold that maximizes precision above this recall floor will be selected.
-MIN_RECALL = 0.30
+MIN_RECALL   = 0.30
+EVAL_SAMPLE  = 200_000   # rows sampled from test parquet for early stopping
+PRED_CHUNK   = 100_000   # rows per chunk during full test prediction
+
+
+def _load_eval_sample(test_parquet_path, feature_cols):
+    """Load first EVAL_SAMPLE rows from test parquet for early stopping."""
+    pf = pq.ParquetFile(test_parquet_path)
+    batch = next(pf.iter_batches(batch_size=EVAL_SAMPLE))
+    df = batch.to_pandas()
+    df['lightning_binary'] = (df['lightning_count'] > 0).astype(int)
+    return df[feature_cols], df['lightning_binary']
+
+
+def _predict_in_chunks(model, test_parquet_path, feature_cols):
+    """Predict on the full test set in chunks — avoids loading it all into RAM."""
+    pf = pq.ParquetFile(test_parquet_path)
+    y_true_list = []
+    y_proba_list = []
+    total = pf.metadata.num_rows
+    processed = 0
+    for batch in pf.iter_batches(batch_size=PRED_CHUNK):
+        df = batch.to_pandas()
+        df['lightning_binary'] = (df['lightning_count'] > 0).astype(int)
+        y_true_list.append(df['lightning_binary'].values)
+        y_proba_list.append(model.predict_proba(df[feature_cols])[:, 1])
+        processed += len(df)
+        print(f"  Predicting... {processed:,} / {total:,}", end='\r')
+    print()
+    return np.concatenate(y_true_list), np.concatenate(y_proba_list)
 
 
 def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importances, ts, out_dir):
@@ -87,30 +118,36 @@ def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importance
 
 
 def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='data'):
-    # load train and test data
+    # load train data (balanced, small — fits in memory)
     train_df = pd.read_parquet(train_parquet_path)
-    test_df  = pd.read_parquet(test_parquet_path)
-    print(f"Train dataset: {train_df.shape[0]} rows × {train_df.shape[1]} columns")
-    print(f"Test dataset:  {test_df.shape[0]} rows × {test_df.shape[1]} columns")
+    print(f"Train dataset: {train_df.shape[0]:,} rows × {train_df.shape[1]} columns")
 
-    # binary target
+    # test set: only metadata for reporting; full predictions done in chunks
+    test_pf   = pq.ParquetFile(test_parquet_path)
+    test_rows = test_pf.metadata.num_rows
+    print(f"Test dataset:  {test_rows:,} rows (will predict in chunks of {PRED_CHUNK:,})")
+
+    # binary target for train
     train_df['lightning_binary'] = (train_df['lightning_count'] > 0).astype(int)
-    test_df['lightning_binary']  = (test_df['lightning_count']  > 0).astype(int)
-    print(f"\nTrain lightning: {train_df['lightning_binary'].sum()} "
+    print(f"\nTrain lightning: {train_df['lightning_binary'].sum():,} "
           f"({train_df['lightning_binary'].mean()*100:.2f}%)")
-    print(f"Test  lightning: {test_df['lightning_binary'].sum()} "
-          f"({test_df['lightning_binary'].mean()*100:.2f}%)")
 
     # features
-    feature_cols = [c for c in train_df.columns if c not in ['time', 'lightning_count', 'lightning_binary', 'lat', 'lon']]
-    print(f"\nNumber of features: {len(feature_cols)}")
+    feature_cols = [c for c in train_df.columns
+                    if c not in ['time', 'lightning_count', 'lightning_binary', 'lat', 'lon']]
+    print(f"Number of features: {len(feature_cols)}")
 
     X_train, y_train = train_df[feature_cols], train_df['lightning_binary']
-    X_test,  y_test  = test_df[feature_cols],  test_df['lightning_binary']
+
+    # small eval sample from test for early stopping
+    X_eval, y_eval = _load_eval_sample(test_parquet_path, feature_cols)
+    print(f"Early-stopping eval sample: {len(X_eval):,} rows "
+          f"({y_eval.sum():,} lightning, {(y_eval==0).sum():,} no-lightning)")
 
     # timestamp for file naming
     train_year = pd.to_datetime(train_df['time']).dt.year.min()
-    test_year  = pd.to_datetime(test_df['time']).dt.year.iloc[0]
+    match      = re.search(r'(\d{4})(?!.*\d{4})', test_parquet_path)
+    test_year  = int(match.group(1)) if match else 'unknown'
     ts = f"train{train_year}_test{test_year}"
 
     # ── LightGBM ──────────────────────────────────────────────────────────────
@@ -129,11 +166,13 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
     )
     lgb_model.fit(
         X_train, y_train,
-        eval_set=[(X_test, y_test)],
+        eval_set=[(X_eval, y_eval)],
         callbacks=[lgb.early_stopping(50), lgb.log_evaluation(50)],
     )
-    lgb_proba = lgb_model.predict_proba(X_test)[:, 1]
-    evaluate_model('LightGBM', y_test, lgb_proba, feature_cols,
+
+    print("Running full test set prediction in chunks...")
+    lgb_y_test, lgb_proba = _predict_in_chunks(lgb_model, test_parquet_path, feature_cols)
+    evaluate_model('LightGBM', lgb_y_test, lgb_proba, feature_cols,
                    lgb_model.booster_.feature_importance(importance_type='gain'), ts, out_dir)
 
     lgb_model_path = f'{out_dir}/lightgbm_model_{ts}.txt'
@@ -151,7 +190,7 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
         learning_rate=0.05,
         max_depth=6,
         min_child_weight=20,
-        scale_pos_weight=scale_pos_weight,  # equivalent to class_weight='balanced'
+        scale_pos_weight=scale_pos_weight,
         random_state=42,
         n_jobs=-1,
         eval_metric='logloss',
@@ -160,11 +199,14 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
     )
     xgb_model.fit(
         X_train, y_train,
-        eval_set=[(X_test, y_test)],
+        eval_set=[(X_eval, y_eval)],
         verbose=50,
     )
-    xgb_proba = xgb_model.predict_proba(X_test)[:, 1]
-    evaluate_model('XGBoost', y_test, xgb_proba, feature_cols, xgb_model.feature_importances_, ts, out_dir)
+
+    print("Running full test set prediction in chunks...")
+    xgb_y_test, xgb_proba = _predict_in_chunks(xgb_model, test_parquet_path, feature_cols)
+    evaluate_model('XGBoost', xgb_y_test, xgb_proba, feature_cols,
+                   xgb_model.feature_importances_, ts, out_dir)
 
     xgb_model_path = f'{out_dir}/xgboost_model_{ts}.json'
     xgb_model.save_model(xgb_model_path)
