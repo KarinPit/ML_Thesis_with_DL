@@ -79,9 +79,11 @@ def download_era5(time_range, out_dir='data'):
         tmp_files.extend([tmp_single, tmp_pressure])
 
     # merge all months into final yearly files
+    # chunks= keeps dask lazy so the merge writes in chunks rather than loading
+    # all months into RAM at once
     print(f"\nMerging {len(months)} months into yearly files...")
-    xr.open_mfdataset(single_monthly,   combine='by_coords').to_netcdf(single_path,   format='NETCDF4')
-    xr.open_mfdataset(pressure_monthly, combine='by_coords').to_netcdf(pressure_path, format='NETCDF4')
+    xr.open_mfdataset(single_monthly,   combine='by_coords', chunks={'time': 100}).to_netcdf(single_path,   format='NETCDF4')
+    xr.open_mfdataset(pressure_monthly, combine='by_coords', chunks={'time': 100}).to_netcdf(pressure_path, format='NETCDF4')
 
     # clean up monthly temp files
     print("Cleaning up temporary monthly files...")
@@ -104,7 +106,6 @@ if __name__ == "__main__":
     # time_range = slice('2005-01-01T00:00', '2005-11-30T23:00')  # 2005: Jan-Nov
     # time_range = slice('2006-01-01T00:00', '2006-08-31T23:00')  # 2006: Jan-Aug
     # time_range = slice('2008-09-01T00:00', '2008-12-31T23:00')  # 2008: Sep-Dec
-    # time_range = slice('2009-01-01T00:00', '2009-09-30T23:00')  # 2009: Jan-Sep
+    time_range = slice('2009-01-01T00:00', '2009-09-30T23:00')  # 2009: Jan-Sep
 
-    time_range = slice('2025-01-01T00:00', '2025-12-31T23:00')
     download_era5(time_range=time_range)

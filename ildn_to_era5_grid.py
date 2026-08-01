@@ -72,5 +72,5 @@ def build_lightning_grid(ildn_path, era5_single_path, out_dir='data'):
 if __name__ == "__main__":
     build_lightning_grid(
         ildn_path='data/2025_for_yoav_including_cloud.txt',
-        era5_single_path='data/era5_single_level_sample.nc',
+        era5_single_path='data/era5_single_level_2025.nc',
     )

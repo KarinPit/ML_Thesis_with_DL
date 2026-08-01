@@ -20,11 +20,11 @@ DATA_DIR = 'data'
 # Comment out years whose balanced parquets don't exist yet.
 TRAIN_YEARS = [
     # LPATS years (partial coverage — uncomment as ERA5 downloads complete)
-    # 2004,   # Sep–Dec only
-    # 2005,   # Jan–Nov (missing May)
-    # 2006,   # Jan–Aug only
-    # 2008,   # Sep–Dec only
-    # 2009,   # Jan–Sep only
+    2004,   # Sep–Dec only
+    2005,   # Jan–Nov (missing May)
+    2006,   # Jan–Aug only
+    2008,   # Sep–Dec only
+    2009,   # Jan–Sep only
 
     # Modern ILDN years (full year)
     2023,

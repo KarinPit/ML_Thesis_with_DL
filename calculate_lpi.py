@@ -128,10 +128,12 @@ def validate_values(file_path):
 
 
 if __name__ == "__main__":
-    year='2024'
-    out_path = compute_and_save_lpi(
-        pressure_path=f'data/era5_pressure_level_{year}.nc',
-        single_path=f'data/era5_single_level_{year}.nc',
-    )
+    years = [2004, 2005, 2006, 2008, 2009]
 
-    # validate_values(out_path)
+    for year in years:
+        out_path = compute_and_save_lpi(
+            pressure_path=f'data/era5_pressure_level_{year}.nc',
+            single_path=f'data/era5_single_level_{year}.nc',
+        )
+
+        # validate_values(out_path)

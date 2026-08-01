@@ -85,10 +85,13 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, 
 
 
 if __name__ == "__main__":
-    year = '2024'
-    build_tabular_dataset(
-        era5_single_path=f'data/era5_single_level_{year}.nc',
-        era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
-        lightning_path=f'data/ildn_on_era5_grid_{year}.nc',
-        lpi_path=f'data/proxy_lpi_{year}.nc',
-    )
+    years = [2004, 2005, 2006, 2008, 2009]
+
+    for year in years:
+        build_tabular_dataset(
+            era5_single_path=f'data/era5_single_level_{year}.nc',
+            era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
+            # lightning_path=f'data/ildn_on_era5_grid_{year}.nc',
+            lightning_path=f'data/lpats_on_era5_grid_{year}.nc',
+            lpi_path=f'data/proxy_lpi_{year}.nc',
+        )

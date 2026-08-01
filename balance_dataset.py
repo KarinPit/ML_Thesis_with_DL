@@ -62,7 +62,8 @@ def balance_dataset(input_path, output_path,
 
 
 if __name__ == "__main__":
-    year = '2024'
-    input_parquet  = f'data/tabular_dataset_{year}.parquet'
-    output_parquet = f'data/tabular_dataset_{year}_balanced.parquet'
-    balance_dataset(input_path=input_parquet, output_path=output_parquet)
+    years = [2004, 2005, 2006, 2008, 2009]
+    for year in years:
+        input_parquet  = f'data/tabular_dataset_{year}.parquet'
+        output_parquet = f'data/tabular_dataset_{year}_balanced.parquet'
+        balance_dataset(input_path=input_parquet, output_path=output_parquet)
