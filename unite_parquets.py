@@ -15,30 +15,23 @@ import pandas as pd
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 DATA_DIR = 'data'
+LAG      = 0   # set to 1,2,3... to unite lagged datasets
 
 # All years to combine into the training set.
-# Comment out years whose balanced parquets don't exist yet.
 TRAIN_YEARS = [
-    # LPATS years (partial coverage — uncomment as ERA5 downloads complete)
-    2004,   # Sep–Dec only
-    2005,   # Jan–Nov (missing May)
-    2006,   # Jan–Aug only
-    2008,   # Sep–Dec only
-    2009,   # Jan–Sep only
-
-    # Modern ILDN years (full year)
-    2023,
-    2024,
+    2004, 2005, 2006, 2008, 2009,  # LPATS
+    2023, 2024,                     # ILDN
 ]
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 if __name__ == '__main__':
-    parts = []
+    lag_str = f"_lag{LAG}" if LAG > 0 else ""
+    parts   = []
     missing = []
 
     for year in TRAIN_YEARS:
-        path = os.path.join(DATA_DIR, f'tabular_dataset_{year}_balanced.parquet')
+        path = os.path.join(DATA_DIR, f'tabular_dataset_{year}{lag_str}_balanced.parquet')
         if not os.path.exists(path):
             print(f"  ⚠  Missing: {path} — skipping year {year}")
             missing.append(year)
@@ -52,7 +45,7 @@ if __name__ == '__main__':
 
     years_used = [y for y in TRAIN_YEARS if y not in missing]
     years_str  = '_'.join(str(y) for y in years_used)
-    out_path   = os.path.join(DATA_DIR, f'tabular_dataset_{years_str}_balanced.parquet')
+    out_path   = os.path.join(DATA_DIR, f'tabular_dataset_{years_str}{lag_str}_balanced.parquet')
 
     df = pd.concat(parts).sort_values('time').reset_index(drop=True)
     print(f"\nCombined: {len(df):,} rows across years {years_used}")

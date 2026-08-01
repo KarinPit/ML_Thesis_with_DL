@@ -252,7 +252,86 @@ ERA5 downloaded for each year covering the same date ranges as the lightning dat
 - 2025 (full year, unbalanced, ILDN modern format) — same as Experiments 1 & 2.
 
 ### Results
-*Pending — training in progress.*
+
+#### LightGBM
+**Default threshold (0.50):**
+| Class | Precision | Recall | F1 | Support |
+|-------|-----------|--------|----|---------|
+| No Lightning | 1.00 | 0.96 | 0.98 | 14,897,479 |
+| Lightning | 0.01 | 0.61 | 0.02 | 12,041 |
+| **Accuracy** | | | **0.96** | 14,909,520 |
+
+ROC-AUC: **0.9231**
+
+**Optimized threshold (0.8944):** Precision: 0.0245 | Recall: 0.3001
+
+**Top 20 features (gain):**
+| Feature | Gain |
+|---------|------|
+| specific_cloud_ice_water_content_600hPa | 983,817 |
+| specific_cloud_ice_water_content_550hPa | 397,456 |
+| total_totals_index | 191,047 |
+| convective_available_potential_energy | 89,549 |
+| specific_cloud_ice_water_content_650hPa | 85,139 |
+| specific_cloud_ice_water_content_500hPa | 65,091 |
+| total_column_cloud_ice_water | 46,780 |
+| surface_pressure | 33,937 |
+| total_column_cloud_liquid_water | 32,815 |
+| specific_cloud_ice_water_content_700hPa | 16,466 |
+| specific_cloud_liquid_water_content_700hPa | 15,966 |
+| specific_humidity_20hPa | 16,251 |
+| temperature_225hPa | 14,488 |
+| k_index | 13,968 |
+| specific_humidity_5hPa | 13,669 |
+| temperature_250hPa | 13,289 |
+| specific_humidity_50hPa | 12,215 |
+| specific_humidity_2hPa | 11,072 |
+| specific_humidity_3hPa | 10,689 |
+| specific_humidity_7hPa | 10,680 |
+
+#### XGBoost
+**Default threshold (0.50):**
+| Class | Precision | Recall | F1 | Support |
+|-------|-----------|--------|----|---------|
+| No Lightning | 1.00 | 0.95 | 0.97 | 14,897,479 |
+| Lightning | 0.01 | 0.64 | 0.02 | 12,041 |
+| **Accuracy** | | | **0.95** | 14,909,520 |
+
+ROC-AUC: **0.9169**
+
+**Optimized threshold (0.9055):** Precision: 0.0224 | Recall: 0.3001
+
+**Top 20 features (gain):**
+| Feature | Gain |
+|---------|------|
+| specific_cloud_ice_water_content_600hPa | 0.3790 |
+| specific_cloud_ice_water_content_550hPa | 0.2476 |
+| specific_cloud_ice_water_content_650hPa | 0.0381 |
+| specific_cloud_ice_water_content_500hPa | 0.0240 |
+| total_totals_index | 0.0223 |
+| convective_available_potential_energy | 0.0113 |
+| specific_cloud_liquid_water_content_700hPa | 0.0099 |
+| specific_cloud_ice_water_content_700hPa | 0.0096 |
+| total_column_cloud_ice_water | 0.0091 |
+| total_column_cloud_liquid_water | 0.0064 |
+| specific_cloud_liquid_water_content_750hPa | 0.0050 |
+| specific_cloud_liquid_water_content_850hPa | 0.0050 |
+| proxy_lpi | 0.0043 |
+| specific_cloud_liquid_water_content_825hPa | 0.0040 |
+| specific_cloud_ice_water_content_400hPa | 0.0036 |
+| specific_cloud_ice_water_content_450hPa | 0.0031 |
+| vertical_velocity_800hPa | 0.0027 |
+| specific_cloud_liquid_water_content_800hPa | 0.0027 |
+| specific_cloud_liquid_water_content_775hPa | 0.0026 |
+| k_index | 0.0026 |
+
+### Key Findings
+
+- **ROC-AUC improved significantly** vs Experiment 2: LightGBM 0.9095 → 0.9231, XGBoost 0.9072 → 0.9169. Adding more training years had a clear positive effect.
+- **LightGBM now outperforms XGBoost** (0.9231 vs 0.9169) — a reversal from Experiments 1 & 2.
+- **Both models agree on the dominant feature**: `specific_cloud_ice_water_content` at 500–700 hPa (the mixed-phase charging zone). This is a physically very meaningful finding — this altitude range is exactly where non-inductive charge separation occurs in thunderstorms.
+- **proxy_lpi appears in XGBoost top 20** (rank 13, gain 0.004) with more training data, suggesting marginal but non-zero signal. Still not present in LightGBM top 20.
+- Stratospheric humidity features (2–50 hPa) still appear in LightGBM top 20 — likely spurious correlations. Not present in XGBoost top 20, which continues to show cleaner physical feature selection.
 
 ---
 

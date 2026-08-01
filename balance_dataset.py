@@ -62,8 +62,13 @@ def balance_dataset(input_path, output_path,
 
 
 if __name__ == "__main__":
-    years = [2004, 2005, 2006, 2008, 2009]
-    for year in years:
-        input_parquet  = f'data/tabular_dataset_{year}.parquet'
-        output_parquet = f'data/tabular_dataset_{year}_balanced.parquet'
+    LAG = 0  # set to 1,2,3... to balance lagged datasets
+
+    lag_str    = f"_lag{LAG}" if LAG > 0 else ""
+    LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
+    ILDN_YEARS  = [2023, 2024]
+
+    for year in LPATS_YEARS + ILDN_YEARS:
+        input_parquet  = f'data/tabular_dataset_{year}{lag_str}.parquet'
+        output_parquet = f'data/tabular_dataset_{year}{lag_str}_balanced.parquet'
         balance_dataset(input_path=input_parquet, output_path=output_parquet)

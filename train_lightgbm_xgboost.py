@@ -1,3 +1,4 @@
+import json
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
@@ -42,7 +43,7 @@ def _predict_in_chunks(model, test_parquet_path, feature_cols):
     return np.concatenate(y_true_list), np.concatenate(y_proba_list)
 
 
-def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importances, ts, out_dir):
+def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importances, ts, out_dir, metrics_dict=None):
     """Evaluate a trained model: classification report, threshold optimization, plots, feature importance."""
 
     y_pred = (y_proba >= 0.5).astype(int)
@@ -116,6 +117,16 @@ def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importance
     print(f"\n── Top 20 most important features ──")
     print(importance.nlargest(20).to_string())
 
+    # save metrics for lag comparison plots
+    if metrics_dict is not None:
+        auc = roc_auc_score(y_test, y_proba)
+        metrics_dict[model_name] = {
+            'roc_auc':        auc,
+            'opt_threshold':  float(best_threshold),
+            'opt_precision':  float(best_precision),
+            'opt_recall':     float(best_recall),
+        }
+
 
 def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='data'):
     # load train data (balanced, small — fits in memory)
@@ -170,10 +181,12 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
         callbacks=[lgb.early_stopping(50), lgb.log_evaluation(50)],
     )
 
+    metrics = {}
+
     print("Running full test set prediction in chunks...")
     lgb_y_test, lgb_proba = _predict_in_chunks(lgb_model, test_parquet_path, feature_cols)
     evaluate_model('LightGBM', lgb_y_test, lgb_proba, feature_cols,
-                   lgb_model.booster_.feature_importance(importance_type='gain'), ts, out_dir)
+                   lgb_model.booster_.feature_importance(importance_type='gain'), ts, out_dir, metrics)
 
     lgb_model_path = f'{out_dir}/lightgbm_model_{ts}.txt'
     lgb_model.booster_.save_model(lgb_model_path)
@@ -206,17 +219,26 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
     print("Running full test set prediction in chunks...")
     xgb_y_test, xgb_proba = _predict_in_chunks(xgb_model, test_parquet_path, feature_cols)
     evaluate_model('XGBoost', xgb_y_test, xgb_proba, feature_cols,
-                   xgb_model.feature_importances_, ts, out_dir)
+                   xgb_model.feature_importances_, ts, out_dir, metrics)
 
     xgb_model_path = f'{out_dir}/xgboost_model_{ts}.json'
     xgb_model.save_model(xgb_model_path)
     print(f"XGBoost model saved to {xgb_model_path}")
 
+    # save metrics JSON for lag comparison plots
+    metrics_path = f'{out_dir}/metrics_{ts}.json'
+    with open(metrics_path, 'w') as f:
+        json.dump({'ts': ts, **metrics}, f, indent=2)
+    print(f"Metrics saved to {metrics_path}")
+
     return lgb_model, xgb_model
 
 
 if __name__ == "__main__":
+    LAG = 0  # set to 1,2,3... for lagged experiments
+    lag_str = f"_lag{LAG}" if LAG > 0 else ""
+
     train_lightgbm_and_xgboost(
-        train_parquet_path='data/tabular_dataset_2023_2024_balanced.parquet',
-        test_parquet_path='data/tabular_dataset_2025.parquet',
+        train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}_balanced.parquet',
+        test_parquet_path=f'data/tabular_dataset_2025{lag_str}.parquet',
     )
