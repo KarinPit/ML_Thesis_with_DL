@@ -226,9 +226,38 @@ This is more operationally useful but harder, since the atmospheric signal at T-
 
 ---
 
+---
+
+## Experiment 3 — Train: 2004–2024 (all available years), Test: 2025
+
+*Date: August 2026*
+
+### Training Data
+All available lightning data combined into one training set:
+
+| Source | Years | Coverage | Strikes |
+|--------|-------|----------|---------|
+| LPATS (IEC, mentor data) | 2004 | Sep–Dec | ~51K |
+| LPATS (IEC, mentor data) | 2005 | Jan–Nov (missing May) | ~41K |
+| LPATS (IEC, mentor data) | 2006 | Jan–Aug | ~38K |
+| LPATS (IEC, mentor data) | 2008 | Sep–Dec | ~98K |
+| LPATS (IEC, mentor data) | 2009 | Jan–Sep | ~56K |
+| ILDN (modern) | 2023 | Full year | — |
+| ILDN (modern) | 2024 | Full year | — |
+
+284,778 unique LPATS strikes after deduplication (overlapping event files removed).  
+ERA5 downloaded for each year covering the same date ranges as the lightning data.
+
+### Test Data
+- 2025 (full year, unbalanced, ILDN modern format) — same as Experiments 1 & 2.
+
+### Results
+*Pending — training in progress.*
+
+---
+
 ## Next Steps
-- [ ] Download ERA5 for additional years (confirm which years have ILDN/ENTLN data)
-- [ ] Train on larger multi-year dataset, re-evaluate metrics
+- [ ] Complete Experiment 3 training and evaluate results
 - [ ] Consider dropping stratospheric features (>100hPa) based on feature importance analysis
 - [ ] Test lagged prediction (T-1, T-2 atmospheric features → T lightning)
 - [ ] Meet with Vlad to discuss results and U-Net next steps
