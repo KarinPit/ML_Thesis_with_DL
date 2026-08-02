@@ -113,26 +113,27 @@ if __name__ == "__main__":
     # lag=0  → synchronous T→T (default, current experiments)
     # lag=1  → ERA5 at T-1 predicts lightning at T  (1-hour forecast)
     # lag=3  → ERA5 at T-3 predicts lightning at T  (3-hour forecast)
-    LAG = 0
+    LAGS = [2, 3, 4, 5, 6]
 
     LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
-    ILDN_YEARS  = [2023, 2024]
+    ILDN_YEARS  = [2023, 2024, 2025]
     # ─────────────────────────────────────────────────────────────────────────
 
-    for year in LPATS_YEARS:
-        build_tabular_dataset(
-            era5_single_path=f'data/era5_single_level_{year}.nc',
-            era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
-            lightning_path=f'data/lpats_on_era5_grid_{year}.nc',
-            lpi_path=f'data/proxy_lpi_{year}.nc',
-            lag=LAG,
-        )
+    for lag in LAGS:        
+        for year in LPATS_YEARS:
+            build_tabular_dataset(
+                era5_single_path=f'data/era5_single_level_{year}.nc',
+                era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
+                lightning_path=f'data/lpats_on_era5_grid_{year}.nc',
+                lpi_path=f'data/proxy_lpi_{year}.nc',
+                lag=lag,
+            )
 
-    for year in ILDN_YEARS:
-        build_tabular_dataset(
-            era5_single_path=f'data/era5_single_level_{year}.nc',
-            era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
-            lightning_path=f'data/ildn_on_era5_grid_{year}.nc',
-            lpi_path=f'data/proxy_lpi_{year}.nc',
-            lag=LAG,
-        )
+        for year in ILDN_YEARS:
+            build_tabular_dataset(
+                era5_single_path=f'data/era5_single_level_{year}.nc',
+                era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
+                lightning_path=f'data/ildn_on_era5_grid_{year}.nc',
+                lpi_path=f'data/proxy_lpi_{year}.nc',
+                lag=lag,
+            )

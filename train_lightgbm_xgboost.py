@@ -128,7 +128,7 @@ def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importance
         }
 
 
-def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='data'):
+def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='data', lag=0):
     # load train data (balanced, small — fits in memory)
     train_df = pd.read_parquet(train_parquet_path)
     print(f"Train dataset: {train_df.shape[0]:,} rows × {train_df.shape[1]} columns")
@@ -159,7 +159,7 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
     train_year = pd.to_datetime(train_df['time']).dt.year.min()
     match      = re.search(r'(\d{4})(?!.*\d{4})', test_parquet_path)
     test_year  = int(match.group(1)) if match else 'unknown'
-    ts = f"train{train_year}_test{test_year}"
+    ts = f"train{train_year}_test{test_year}_{lag}"
 
     # ── LightGBM ──────────────────────────────────────────────────────────────
     print("\n" + "="*60)
@@ -235,10 +235,11 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
 
 
 if __name__ == "__main__":
-    LAG = 0  # set to 1,2,3... for lagged experiments
-    lag_str = f"_lag{LAG}" if LAG > 0 else ""
+    lags = [1, 2, 3, 4, 5, 6]
 
-    train_lightgbm_and_xgboost(
-        train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}_balanced.parquet',
-        test_parquet_path=f'data/tabular_dataset_2025{lag_str}.parquet',
-    )
+    for lag in lags:
+        lag_str = f"_lag{lag}" if lag > 0 else ""
+        train_lightgbm_and_xgboost(
+            train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}_balanced.parquet',
+            test_parquet_path=f'data/tabular_dataset_2025{lag_str}.parquet', lag=lag
+        )
