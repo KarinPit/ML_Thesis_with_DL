@@ -235,6 +235,7 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
 
 
 if __name__ == "__main__":
+    # lags = [1, 2, 3, 4, 5, 6]
     lags = [1, 2, 3, 4, 5, 6]
 
     for lag in lags:
