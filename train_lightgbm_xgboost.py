@@ -235,12 +235,14 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
 
 
 if __name__ == "__main__":
-    # lags = [1, 2, 3, 4, 5, 6]
-    lags = [1, 2, 3, 4, 5, 6]
+    LAG             = 0     # synchronous T→T
+    CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
 
-    for lag in lags:
-        lag_str = f"_lag{lag}" if lag > 0 else ""
-        train_lightgbm_and_xgboost(
-            train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}_balanced.parquet',
-            test_parquet_path=f'data/tabular_dataset_2025{lag_str}.parquet', lag=lag
-        )
+    lag_str  = f"_lag{LAG}" if LAG > 0 else ""
+    mask_str = "_convmask" if CONVECTIVE_MASK else ""
+
+    train_lightgbm_and_xgboost(
+        train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}{mask_str}_balanced.parquet',
+        test_parquet_path=f'data/tabular_dataset_2025{lag_str}{mask_str}.parquet',
+        lag=LAG,
+    )

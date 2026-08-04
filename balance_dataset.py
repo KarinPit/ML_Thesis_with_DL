@@ -62,14 +62,15 @@ def balance_dataset(input_path, output_path,
 
 
 if __name__ == "__main__":
+    LAG             = 0     # set to 1,2,3... to balance lagged datasets
+    CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
+
+    lag_str     = f"_lag{LAG}" if LAG > 0 else ""
+    mask_str    = "_convmask" if CONVECTIVE_MASK else ""
     LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
     ILDN_YEARS  = [2023, 2024]
-    lags = [1, 2 ,3 ,4 ,5 ,6]
-    
-    for lag in lags:
-        lag_str    = f"_lag{lag}" if lag > 0 else ""
 
-        for year in LPATS_YEARS + ILDN_YEARS:
-            input_parquet  = f'data/tabular_dataset_{year}{lag_str}.parquet'
-            output_parquet = f'data/tabular_dataset_{year}{lag_str}_balanced.parquet'
-            balance_dataset(input_path=input_parquet, output_path=output_parquet)
+    for year in LPATS_YEARS + ILDN_YEARS:
+        input_parquet  = f'data/tabular_dataset_{year}{lag_str}{mask_str}.parquet'
+        output_parquet = f'data/tabular_dataset_{year}{lag_str}{mask_str}_balanced.parquet'
+        balance_dataset(input_path=input_parquet, output_path=output_parquet)

@@ -26,31 +26,32 @@ TRAIN_YEARS = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    lags = [1, 2, 3, 4, 5, 6]
+    LAG             = 0     # set to 1,2,3... to unite lagged datasets
+    CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
 
-    for lag in lags:
-        lag_str = f"_lag{lag}" if lag > 0 else ""
-        parts   = []
-        missing = []
+    lag_str  = f"_lag{LAG}" if LAG > 0 else ""
+    mask_str = "_convmask" if CONVECTIVE_MASK else ""
+    parts    = []
+    missing  = []
 
-        for year in TRAIN_YEARS:
-            path = os.path.join(DATA_DIR, f'tabular_dataset_{year}{lag_str}_balanced.parquet')
-            if not os.path.exists(path):
-                print(f"  ⚠  Missing: {path} — skipping year {year}")
-                missing.append(year)
-                continue
-            df_yr = pd.read_parquet(path)
-            print(f"  {year}: {len(df_yr):,} rows")
-            parts.append(df_yr)
+    for year in TRAIN_YEARS:
+        path = os.path.join(DATA_DIR, f'tabular_dataset_{year}{lag_str}{mask_str}_balanced.parquet')
+        if not os.path.exists(path):
+            print(f"  ⚠  Missing: {path} — skipping year {year}")
+            missing.append(year)
+            continue
+        df_yr = pd.read_parquet(path)
+        print(f"  {year}: {len(df_yr):,} rows")
+        parts.append(df_yr)
 
-        if not parts:
-            raise RuntimeError("No parquet files found — nothing to combine.")
+    if not parts:
+        raise RuntimeError("No parquet files found — nothing to combine.")
 
-        years_used = [y for y in TRAIN_YEARS if y not in missing]
-        years_str  = '_'.join(str(y) for y in years_used)
-        out_path   = os.path.join(DATA_DIR, f'tabular_dataset_{years_str}{lag_str}_balanced.parquet')
+    years_used = [y for y in TRAIN_YEARS if y not in missing]
+    years_str  = '_'.join(str(y) for y in years_used)
+    out_path   = os.path.join(DATA_DIR, f'tabular_dataset_{years_str}{lag_str}{mask_str}_balanced.parquet')
 
-        df = pd.concat(parts).sort_values('time').reset_index(drop=True)
-        print(f"\nCombined: {len(df):,} rows across years {years_used}")
-        df.to_parquet(out_path, index=False)
-        print(f"Saved to {out_path}")
+    df = pd.concat(parts).sort_values('time').reset_index(drop=True)
+    print(f"\nCombined: {len(df):,} rows across years {years_used}")
+    df.to_parquet(out_path, index=False)
+    print(f"Saved to {out_path}")

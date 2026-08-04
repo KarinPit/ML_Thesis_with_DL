@@ -6,8 +6,15 @@ import pyarrow.parquet as pq
 
 CHUNK_SIZE = 100  # number of time steps processed at a time
 
+# Pressure levels (hPa) used for the convective cloud mask.
+# Keep only rows where vertical_velocity * ciwc < 0 at ANY of these levels.
+# ERA5 convention: vertical_velocity < 0 = updraft.
+# So w * ciwc < 0 ↔ updraft with ice present = cumulonimbus cell.
+CONV_MASK_LEVELS = [500, 525, 550, 575, 600, 625, 650, 675, 700]
 
-def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, out_dir='data', lpi_path=None, lag=0):
+
+def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path,
+                          out_dir='data', lpi_path=None, lag=0, convective_mask=False):
     """
     Build a flat tabular parquet from ERA5 + lightning + optional LPI.
 
@@ -19,6 +26,11 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, 
         lag=1  → ERA5 features at T-1 predict lightning at T.
         lag=k  → ERA5 features at T-k predict lightning at T.
         Output filename includes the lag: tabular_dataset_{year}_lag{k}.parquet
+    convective_mask : bool
+        If True, drop rows where vertical_velocity * specific_cloud_ice_water_content >= 0
+        at ALL levels in CONV_MASK_LEVELS (500–700 hPa).
+        Keeps only cumulonimbus cells (updraft + ice), removes cirrus and clear-sky rows.
+        Output filename gets a '_convmask' suffix.
     """
     # Load NetCDF files lazily — nothing is read into RAM yet
     ds_single    = xr.open_dataset(era5_single_path,   chunks={'time': CHUNK_SIZE})
@@ -40,7 +52,8 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, 
     end_year   = pd.Timestamp(times[-1]).year
     ts       = f"{start_year}_{end_year}" if end_year != start_year else str(start_year)
     lag_str  = f"_lag{lag}" if lag > 0 else ""
-    out_path = f'{out_dir}/tabular_dataset_{ts}{lag_str}.parquet'
+    mask_str = "_convmask" if convective_mask else ""
+    out_path = f'{out_dir}/tabular_dataset_{ts}{lag_str}{mask_str}.parquet'
 
     if lag > 0:
         print(f"Lag mode: ERA5 features at T-{lag}, lightning at T. "
@@ -93,8 +106,28 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, 
         # lightning target — always at T
         chunk['lightning_count'] = ds_lightning['lightning_count'].isel(time=lightning_slice).compute().values.ravel()
 
-        # write chunk to parquet incrementally
+        # build dataframe
         df_chunk = pd.DataFrame(chunk)
+
+        # convective cloud mask — keep only cumulonimbus cells
+        # ERA5: vertical_velocity < 0 = updraft → w * ciwc < 0 = convective ice
+        if convective_mask:
+            conv_keep = np.zeros(len(df_chunk), dtype=bool)
+            for lev in CONV_MASK_LEVELS:
+                w_col    = f'vertical_velocity_{lev}hPa'
+                ciwc_col = f'specific_cloud_ice_water_content_{lev}hPa'
+                if w_col in df_chunk.columns and ciwc_col in df_chunk.columns:
+                    conv_keep |= (df_chunk[w_col].values * df_chunk[ciwc_col].values < 0)
+            n_before = len(df_chunk)
+            df_chunk = df_chunk[conv_keep].reset_index(drop=True)
+            n_after  = len(df_chunk)
+            if n_before > 0:
+                print(f"  Convective mask: kept {n_after:,} / {n_before:,} rows "
+                      f"({100*n_after/n_before:.1f}%)", end='\r')
+
+        if df_chunk.empty:
+            continue
+
         table = pa.Table.from_pandas(df_chunk, preserve_index=False)
         if writer is None:
             writer = pq.ParquetWriter(out_path, table.schema)
@@ -110,30 +143,29 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path, 
 
 if __name__ == "__main__":
     # ── Configuration ────────────────────────────────────────────────────────
-    # lag=0  → synchronous T→T (default, current experiments)
-    # lag=1  → ERA5 at T-1 predicts lightning at T  (1-hour forecast)
-    # lag=3  → ERA5 at T-3 predicts lightning at T  (3-hour forecast)
-    LAGS = [2, 3, 4, 5, 6]
+    LAG             = 0     # synchronous T→T
+    CONVECTIVE_MASK = True  # drop non-convective rows (w * ciwc >= 0 at 500-700 hPa)
 
     LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
     ILDN_YEARS  = [2023, 2024, 2025]
     # ─────────────────────────────────────────────────────────────────────────
 
-    for lag in LAGS:        
-        for year in LPATS_YEARS:
-            build_tabular_dataset(
-                era5_single_path=f'data/era5_single_level_{year}.nc',
-                era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
-                lightning_path=f'data/lpats_on_era5_grid_{year}.nc',
-                lpi_path=f'data/proxy_lpi_{year}.nc',
-                lag=lag,
-            )
+    for year in LPATS_YEARS:
+        build_tabular_dataset(
+            era5_single_path=f'data/era5_single_level_{year}.nc',
+            era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
+            lightning_path=f'data/lpats_on_era5_grid_{year}.nc',
+            lpi_path=f'data/proxy_lpi_{year}.nc',
+            lag=LAG,
+            convective_mask=CONVECTIVE_MASK,
+        )
 
-        for year in ILDN_YEARS:
-            build_tabular_dataset(
-                era5_single_path=f'data/era5_single_level_{year}.nc',
-                era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
-                lightning_path=f'data/ildn_on_era5_grid_{year}.nc',
-                lpi_path=f'data/proxy_lpi_{year}.nc',
-                lag=lag,
-            )
+    for year in ILDN_YEARS:
+        build_tabular_dataset(
+            era5_single_path=f'data/era5_single_level_{year}.nc',
+            era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
+            lightning_path=f'data/ildn_on_era5_grid_{year}.nc',
+            lpi_path=f'data/proxy_lpi_{year}.nc',
+            lag=LAG,
+            convective_mask=CONVECTIVE_MASK,
+        )
