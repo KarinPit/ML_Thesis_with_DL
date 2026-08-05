@@ -62,14 +62,11 @@ def balance_dataset(input_path, output_path,
 
 
 if __name__ == "__main__":
-    LAGS            = [0, 1, 2, 3, 4, 5, 6, 12, 24, 48]
+    LAGS            = [12, 24, 48]
     CONVECTIVE_MASK = True            # must match build_tabular_dataset.py setting
 
-    # LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
-    # ILDN_YEARS  = [2023, 2024]        # 2025 is test set — never balanced
-
-    LPATS_YEARS = []
-    ILDN_YEARS  = [2025]
+    LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
+    ILDN_YEARS  = [2023, 2024, 2025]        # 2025 is test set — never balanced
 
     mask_str  = "_convmask" if CONVECTIVE_MASK else ""
     ratio_str = "_balanced" if RATIO == 1 else f"_balanced{RATIO}to1"

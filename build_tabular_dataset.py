@@ -143,8 +143,8 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path,
 
 if __name__ == "__main__":
     # ── Configuration ────────────────────────────────────────────────────────
-    LAGS            = [0, 1, 2, 3, 4, 5, 6, 12, 24, 48]
-    CONVECTIVE_MASK = True            # drop non-convective rows
+    LAGS  = [12, 24, 48]
+    CONVECTIVE_MASK = True # drop non-convective rows
 
     LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
     ILDN_YEARS  = [2023, 2024, 2025]
