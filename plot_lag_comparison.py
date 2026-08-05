@@ -84,7 +84,7 @@ def collect_curves(model_type):
             model_path = f"{DATA_DIR}/xgboost_model_{ts}.json"
 
         # test parquet for this lag (always unbalanced)
-        test_path = f"{DATA_DIR}/tabular_dataset_{TEST_YEAR}{lag_str}{MASK_STR}.parquet"
+        test_path = f"{DATA_DIR}/tabular_dataset_{TEST_YEAR}{lag_str}{MASK_STR}{BALANCE_STR}.parquet"
 
         try:
             print(f"\nLag {lag} — loading {model_type} from {model_path}")
@@ -133,7 +133,7 @@ def collect_curves(model_type):
 def plot_lag_figure(lgb_results, xgb_results):
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     fig.suptitle(
-        f'Lag Comparison: T to T-6  |  train={BALANCE_STR.strip("_")}  |  test=unbalanced',
+        f'Lag Comparison: T to T-6  |  train={BALANCE_STR.strip("_")}  |  test={BALANCE_STR.strip("_")}',
         fontsize=13)
 
     base_rate = lgb_results[0]['base_rate'] if lgb_results else xgb_results[0]['base_rate']
@@ -162,14 +162,14 @@ def plot_lag_figure(lgb_results, xgb_results):
         ax_roc.set_xlabel('False Positive Rate')
         ax_roc.set_ylabel('True Positive Rate (Recall)')
         ax_roc.set_xlim([0, 1]); ax_roc.set_ylim([0, 1])
-        ax_roc.legend(fontsize=7, loc='lower right')
+        ax_roc.legend(fontsize=12, loc='lower right')
         ax_roc.grid(True, alpha=0.3)
 
         ax_pr.set_title(f'Precision-Recall — {model_name}')
         ax_pr.set_xlabel('Recall')
         ax_pr.set_ylabel('Precision')
         ax_pr.set_xlim([0, 1]); ax_pr.set_ylim([0, 1])
-        ax_pr.legend(fontsize=7, loc='upper right')
+        ax_pr.legend(fontsize=12, loc='lower right')
         ax_pr.grid(True, alpha=0.3)
 
     plt.tight_layout()

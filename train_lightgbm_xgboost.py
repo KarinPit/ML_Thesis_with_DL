@@ -302,6 +302,6 @@ if __name__ == "__main__":
         print(f"{'#'*60}")
         train_lightgbm_and_xgboost(
             train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}{mask_str}{balance_str}.parquet',
-            test_parquet_path=f'data/tabular_dataset_2025{lag_str}{mask_str}.parquet',  # test is always unbalanced
+            test_parquet_path=f'data/tabular_dataset_2025{lag_str}{mask_str}{balance_str}.parquet',  # test is always unbalanced
             lag=LAG,
         )

@@ -2,7 +2,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 # ── configuration ─────────────────────────────────────────────────────────────
-RATIO        = 50     # no-lightning rows per lightning row (1 = 50/50, 50 = 50:1)
+RATIO        = 1     # no-lightning rows per lightning row (1 = 50/50, 50 = 50:1)
 CHUNK_SIZE   = 50000  # rows per chunk when scanning the parquet
 RANDOM_STATE = 42
 # ──────────────────────────────────────────────────────────────────────────────
@@ -65,8 +65,11 @@ if __name__ == "__main__":
     LAGS            = list(range(7))  # 0, 1, 2, 3, 4, 5, 6
     CONVECTIVE_MASK = True            # must match build_tabular_dataset.py setting
 
-    LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
-    ILDN_YEARS  = [2023, 2024]        # 2025 is test set — never balanced
+    # LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
+    # ILDN_YEARS  = [2023, 2024]        # 2025 is test set — never balanced
+
+    LPATS_YEARS = []
+    ILDN_YEARS  = [2025]
 
     mask_str  = "_convmask" if CONVECTIVE_MASK else ""
     ratio_str = "_balanced" if RATIO == 1 else f"_balanced{RATIO}to1"

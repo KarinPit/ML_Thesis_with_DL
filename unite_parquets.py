@@ -23,10 +23,10 @@ TRAIN_YEARS = [
     2023, 2024,                     # ILDN
 ]
 
-LAG             = 0     # set to 1,2,3... to unite lagged datasets
+LAGS            = list(range(7))  # 0, 1, 2, 3, 4, 5, 6
 CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
 BALANCED        = True  # True = balanced; False = raw unbalanced parquets
-RATIO           = 50    # no-lightning rows per lightning row (1 = 50/50, 50 = 50:1); only used when BALANCED=True
+RATIO           = 1    # no-lightning rows per lightning row (1 = 50/50, 50 = 50:1); only used when BALANCED=True
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ if __name__ == '__main__':
     else:
         balance_str = f"_balanced{RATIO}to1"
 
-    for LAG in range(7):
+    for LAG in LAGS:
         lag_str = f"_lag{LAG}" if LAG > 0 else ""
         print(f"\n{'='*60}\nUniting parquets for LAG={LAG}\n{'='*60}")
         parts   = []
