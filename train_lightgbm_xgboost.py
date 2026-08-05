@@ -16,11 +16,11 @@ EVAL_SAMPLE  = 200_000   # rows sampled from test parquet for early stopping
 PRED_CHUNK   = 100_000   # rows per chunk during full test prediction
 
 
-def _load_eval_sample(test_parquet_path, feature_cols):
-    """Load first EVAL_SAMPLE rows from test parquet for early stopping."""
-    pf = pq.ParquetFile(test_parquet_path)
-    batch = next(pf.iter_batches(batch_size=EVAL_SAMPLE))
-    df = batch.to_pandas()
+def _load_eval_sample(train_parquet_path, feature_cols):
+    """Load the last EVAL_SAMPLE rows from the training parquet for early stopping.
+    Uses the tail of the training set (most recent year, e.g. 2024) — never the test set."""
+    df = pd.read_parquet(train_parquet_path, columns=feature_cols + ['lightning_count'])
+    df = df.tail(EVAL_SAMPLE).copy()
     df['lightning_binary'] = (df['lightning_count'] > 0).astype(int)
     return df[feature_cols], df['lightning_binary']
 
@@ -180,7 +180,7 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
     X_train, y_train = train_df[feature_cols], train_df['lightning_binary']
 
     # small eval sample from test for early stopping
-    X_eval, y_eval = _load_eval_sample(test_parquet_path, feature_cols)
+    X_eval, y_eval = _load_eval_sample(train_parquet_path, feature_cols)
     print(f"Early-stopping eval sample: {len(X_eval):,} rows "
           f"({y_eval.sum():,} lightning, {(y_eval==0).sum():,} no-lightning)")
 
