@@ -67,8 +67,10 @@ if __name__ == "__main__":
 
     lag_str     = f"_lag{LAG}" if LAG > 0 else ""
     mask_str    = "_convmask" if CONVECTIVE_MASK else ""
-    LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
-    ILDN_YEARS  = [2023, 2024]
+    # LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
+    # ILDN_YEARS  = [2023, 2024]
+    LPATS_YEARS = []
+    ILDN_YEARS  = [2025]
 
     for year in LPATS_YEARS + ILDN_YEARS:
         input_parquet  = f'data/tabular_dataset_{year}{lag_str}{mask_str}.parquet'
