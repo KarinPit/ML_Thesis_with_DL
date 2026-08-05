@@ -25,7 +25,8 @@ TRAIN_YEARS = [
 
 LAG             = 0     # set to 1,2,3... to unite lagged datasets
 CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
-BALANCED        = False # True = balanced; False = raw unbalanced parquets
+BALANCED        = True  # True = balanced; False = raw unbalanced parquets
+RATIO           = 50    # no-lightning rows per lightning row (1 = 50/50, 50 = 50:1); only used when BALANCED=True
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,12 @@ if __name__ == '__main__':
 
     lag_str     = f"_lag{LAG}" if LAG > 0 else ""
     mask_str    = "_convmask" if CONVECTIVE_MASK else ""
-    balance_str = "_balanced" if BALANCED else ""
+    if not BALANCED:
+        balance_str = ""
+    elif RATIO == 1:
+        balance_str = "_balanced"
+    else:
+        balance_str = f"_balanced{RATIO}to1"
     parts    = []
     missing  = []
 

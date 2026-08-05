@@ -2,7 +2,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 # ── configuration ─────────────────────────────────────────────────────────────
-RATIO        = 1      # no-lightning rows per lightning row (1 = 50/50)
+RATIO        = 50     # no-lightning rows per lightning row (1 = 50/50, 50 = 50:1)
 CHUNK_SIZE   = 50000  # rows per chunk when scanning the parquet
 RANDOM_STATE = 42
 # ──────────────────────────────────────────────────────────────────────────────
@@ -72,7 +72,9 @@ if __name__ == "__main__":
     LPATS_YEARS = []
     ILDN_YEARS  = [2025]
 
+    ratio_str = f"_balanced" if RATIO == 1 else f"_balanced{RATIO}to1"
+
     for year in LPATS_YEARS + ILDN_YEARS:
         input_parquet  = f'data/tabular_dataset_{year}{lag_str}{mask_str}.parquet'
-        output_parquet = f'data/tabular_dataset_{year}{lag_str}{mask_str}_balanced.parquet'
-        balance_dataset(input_path=input_parquet, output_path=output_parquet)
+        output_parquet = f'data/tabular_dataset_{year}{lag_str}{mask_str}{ratio_str}.parquet'
+        balance_dataset(input_path=input_parquet, output_path=output_parquet, ratio=RATIO)
