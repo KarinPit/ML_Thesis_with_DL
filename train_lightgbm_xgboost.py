@@ -282,7 +282,7 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
 
 
 if __name__ == "__main__":
-    LAGS            = list(range(7))  # 0, 1, 2, 3, 4, 5, 6
+    LAGS            = [0, 1, 2, 3, 4, 5, 6, 12, 24, 48]
     CONVECTIVE_MASK = True            # must match build_tabular_dataset.py setting
     BALANCED        = True            # True = use balanced/subsampled train set
     RATIO           = 1               # 1 = 50/50, 50 = 50:1; must match balance_dataset.py

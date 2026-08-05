@@ -22,7 +22,7 @@ from sklearn.metrics import (roc_auc_score, average_precision_score,
                              precision_recall_curve, roc_curve)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-LAGS        = list(range(7))        # 0 .. 6
+LAGS        = [0, 1, 2, 3, 4, 5, 6, 12, 24, 48]
 DATA_DIR    = 'data'
 OUT_DIR     = 'data'
 PRED_CHUNK  = 100_000
