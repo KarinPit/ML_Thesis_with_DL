@@ -32,35 +32,39 @@ RATIO           = 50    # no-lightning rows per lightning row (1 = 50/50, 50 = 5
 
 if __name__ == '__main__':
 
-    lag_str     = f"_lag{LAG}" if LAG > 0 else ""
-    mask_str    = "_convmask" if CONVECTIVE_MASK else ""
+    mask_str = "_convmask" if CONVECTIVE_MASK else ""
     if not BALANCED:
         balance_str = ""
     elif RATIO == 1:
         balance_str = "_balanced"
     else:
         balance_str = f"_balanced{RATIO}to1"
-    parts    = []
-    missing  = []
 
-    for year in TRAIN_YEARS:
-        path = os.path.join(DATA_DIR, f'tabular_dataset_{year}{lag_str}{mask_str}{balance_str}.parquet')
-        if not os.path.exists(path):
-            print(f"  ⚠  Missing: {path} — skipping year {year}")
-            missing.append(year)
+    for LAG in range(7):
+        lag_str = f"_lag{LAG}" if LAG > 0 else ""
+        print(f"\n{'='*60}\nUniting parquets for LAG={LAG}\n{'='*60}")
+        parts   = []
+        missing = []
+
+        for year in TRAIN_YEARS:
+            path = os.path.join(DATA_DIR, f'tabular_dataset_{year}{lag_str}{mask_str}{balance_str}.parquet')
+            if not os.path.exists(path):
+                print(f"  ⚠  Missing: {path} — skipping year {year}")
+                missing.append(year)
+                continue
+            df_yr = pd.read_parquet(path)
+            print(f"  {year}: {len(df_yr):,} rows")
+            parts.append(df_yr)
+
+        if not parts:
+            print(f"  No parquet files found for LAG={LAG} — skipping.")
             continue
-        df_yr = pd.read_parquet(path)
-        print(f"  {year}: {len(df_yr):,} rows")
-        parts.append(df_yr)
 
-    if not parts:
-        raise RuntimeError("No parquet files found — nothing to combine.")
+        years_used = [y for y in TRAIN_YEARS if y not in missing]
+        years_str  = '_'.join(str(y) for y in years_used)
+        out_path   = os.path.join(DATA_DIR, f'tabular_dataset_{years_str}{lag_str}{mask_str}{balance_str}.parquet')
 
-    years_used = [y for y in TRAIN_YEARS if y not in missing]
-    years_str  = '_'.join(str(y) for y in years_used)
-    out_path   = os.path.join(DATA_DIR, f'tabular_dataset_{years_str}{lag_str}{mask_str}{balance_str}.parquet')
-
-    df = pd.concat(parts).sort_values('time').reset_index(drop=True)
-    print(f"\nCombined: {len(df):,} rows across years {years_used}")
-    df.to_parquet(out_path, index=False)
-    print(f"Saved to {out_path}")
+        df = pd.concat(parts).sort_values('time').reset_index(drop=True)
+        print(f"\nCombined: {len(df):,} rows across years {years_used}")
+        df.to_parquet(out_path, index=False)
+        print(f"Saved to {out_path}")

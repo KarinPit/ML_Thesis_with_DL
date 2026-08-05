@@ -143,29 +143,32 @@ def build_tabular_dataset(era5_single_path, era5_pressure_path, lightning_path,
 
 if __name__ == "__main__":
     # ── Configuration ────────────────────────────────────────────────────────
-    LAG             = 0     # synchronous T→T
-    CONVECTIVE_MASK = True  # drop non-convective rows (w * ciwc >= 0 at 500-700 hPa)
+    LAGS            = list(range(7))  # 0, 1, 2, 3, 4, 5, 6
+    CONVECTIVE_MASK = True            # drop non-convective rows
 
     LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
     ILDN_YEARS  = [2023, 2024, 2025]
     # ─────────────────────────────────────────────────────────────────────────
 
-    for year in LPATS_YEARS:
-        build_tabular_dataset(
-            era5_single_path=f'data/era5_single_level_{year}.nc',
-            era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
-            lightning_path=f'data/lpats_on_era5_grid_{year}.nc',
-            lpi_path=f'data/proxy_lpi_{year}.nc',
-            lag=LAG,
-            convective_mask=CONVECTIVE_MASK,
-        )
+    for LAG in LAGS:
+        print(f"\n{'='*60}\nBuilding tabular datasets for LAG={LAG}\n{'='*60}")
 
-    for year in ILDN_YEARS:
-        build_tabular_dataset(
-            era5_single_path=f'data/era5_single_level_{year}.nc',
-            era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
-            lightning_path=f'data/ildn_on_era5_grid_{year}.nc',
-            lpi_path=f'data/proxy_lpi_{year}.nc',
-            lag=LAG,
-            convective_mask=CONVECTIVE_MASK,
-        )
+        for year in LPATS_YEARS:
+            build_tabular_dataset(
+                era5_single_path=f'data/era5_single_level_{year}.nc',
+                era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
+                lightning_path=f'data/lpats_on_era5_grid_{year}.nc',
+                lpi_path=f'data/proxy_lpi_{year}.nc',
+                lag=LAG,
+                convective_mask=CONVECTIVE_MASK,
+            )
+
+        for year in ILDN_YEARS:
+            build_tabular_dataset(
+                era5_single_path=f'data/era5_single_level_{year}.nc',
+                era5_pressure_path=f'data/era5_pressure_level_{year}.nc',
+                lightning_path=f'data/ildn_on_era5_grid_{year}.nc',
+                lpi_path=f'data/proxy_lpi_{year}.nc',
+                lag=LAG,
+                convective_mask=CONVECTIVE_MASK,
+            )

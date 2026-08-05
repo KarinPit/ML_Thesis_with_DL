@@ -43,8 +43,9 @@ def _predict_in_chunks(model, test_parquet_path, feature_cols):
     return np.concatenate(y_true_list), np.concatenate(y_proba_list)
 
 
-def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importances, ts, out_dir, metrics_dict=None):
-    """Evaluate a trained model: classification report, threshold optimization, plots, feature importance."""
+def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importances, metrics_dict=None):
+    """Evaluate a trained model: classification report, threshold optimization, feature importance.
+    Returns curve data dict for combined plotting."""
 
     y_pred = (y_proba >= 0.5).astype(int)
 
@@ -52,7 +53,10 @@ def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importance
     print(f"{model_name} — Classification Report (default threshold=0.50)")
     print('='*60)
     print(classification_report(y_test, y_pred, target_names=['No Lightning', 'Lightning']))
-    print(f"ROC-AUC: {roc_auc_score(y_test, y_proba):.4f}")
+
+    roc_auc = roc_auc_score(y_test, y_proba)
+    pr_auc  = average_precision_score(y_test, y_proba)
+    print(f"ROC-AUC: {roc_auc:.4f}  |  PR-AUC: {pr_auc:.4f}")
 
     # threshold optimization: maximize precision while keeping recall >= MIN_RECALL
     precisions, recalls, thresholds = precision_recall_curve(y_test, y_proba)
@@ -80,72 +84,77 @@ def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importance
     print(f"\n── Classification Report (optimized threshold) ──")
     print(classification_report(y_test, y_pred_opt, target_names=['No Lightning', 'Lightning']))
 
-    # random baseline
-    rand_proba = np.random.default_rng(42).random(len(y_test))
-
-    # plots: 2 rows (model / random), 2 cols (ROC / PR)
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    fig.suptitle(model_name, fontsize=14)
-
-    def _plot_roc(ax, proba, label, color):
-        fpr_, tpr_, _ = roc_curve(y_test, proba)
-        auc_ = roc_auc_score(y_test, proba)
-        ax.plot(fpr_, tpr_, color=color, lw=2, label=f'AUC = {auc_:.4f}')
-        ax.plot([0, 1], [0, 1], 'k--', lw=1)
-        ax.set_xlabel('False Positive Rate')
-        ax.set_ylabel('True Positive Rate (Recall)')
-        ax.set_title(f'ROC Curve — {label}')
-        ax.set_xlim([0, 1]); ax.set_ylim([0, 1])
-        ax.legend(); ax.grid(True, alpha=0.3)
-
-    def _plot_pr(ax, proba, label, color, mark_threshold=False):
-        prec_, rec_, _ = precision_recall_curve(y_test, proba)
-        ax.plot(rec_, prec_, color=color, lw=2)
-        if mark_threshold:
-            ax.scatter(best_recall, best_precision, color='red', zorder=5,
-                       label=f'Chosen threshold\nP={best_precision:.3f}, R={best_recall:.3f}')
-            ax.axvline(MIN_RECALL, color='gray', linestyle=':', lw=1, label=f'Min recall={MIN_RECALL}')
-            ax.legend()
-        ax.set_xlabel('Recall')
-        ax.set_ylabel('Precision')
-        ax.set_title(f'Precision-Recall Curve — {label}')
-        ax.set_xlim([0, 1]); ax.set_ylim([0, 1])
-        ax.grid(True, alpha=0.3)
-
-    fpr, tpr, _ = roc_curve(y_test, y_proba)
-    auc = roc_auc_score(y_test, y_proba)
-
-    _plot_roc(axes[0, 0], y_proba,    'Model',  'steelblue')
-    _plot_pr (axes[0, 1], y_proba,    'Model',  'darkorange', mark_threshold=True)
-    _plot_roc(axes[1, 0], rand_proba, 'Random', 'gray')
-    _plot_pr (axes[1, 1], rand_proba, 'Random', 'gray')
-
-    plt.tight_layout()
-    name_slug = model_name.lower().replace(' ', '_')
-    plot_path = f'{out_dir}/{name_slug}_curves_{ts}.png'
-    plt.savefig(plot_path, dpi=150)
-    plt.close()
-    print(f"Curves saved to {plot_path}")
-
     # feature importance (top 20)
     importance = pd.Series(feature_importances, index=feature_cols)
     print(f"\n── Top 20 most important features ──")
     print(importance.nlargest(20).to_string())
 
-    # PR-AUC
-    pr_auc = average_precision_score(y_test, y_proba)
-    print(f"\nPR-AUC (average precision): {pr_auc:.4f}")
-
-    # save metrics for lag comparison plots
     if metrics_dict is not None:
-        auc = roc_auc_score(y_test, y_proba)
         metrics_dict[model_name] = {
-            'roc_auc':        auc,
+            'roc_auc':        roc_auc,
             'pr_auc':         pr_auc,
             'opt_threshold':  float(best_threshold),
             'opt_precision':  float(best_precision),
             'opt_recall':     float(best_recall),
         }
+
+    # return curve data for combined plot
+    fpr, tpr, _        = roc_curve(y_test, y_proba)
+    pr_prec, pr_rec, _ = precision_recall_curve(y_test, y_proba)
+    return {
+        'fpr': fpr, 'tpr': tpr, 'roc_auc': roc_auc,
+        'pr_rec': pr_rec, 'pr_prec': pr_prec, 'pr_auc': pr_auc,
+        'best_recall': best_recall, 'best_precision': best_precision,
+    }
+
+
+def plot_combined_curves(curve_data, y_test, ts, out_dir):
+    """One PNG with LightGBM (row 0) and XGBoost (row 1), each with ROC + PR.
+    Includes no-skill lines and PR-AUC in legend."""
+
+    base_rate = float(y_test.mean())   # no-skill PR level = prevalence of lightning
+    colors    = {'LightGBM': 'steelblue', 'XGBoost': 'darkorange'}
+    models    = list(curve_data.keys())   # preserves insertion order: LGB then XGB
+
+    fig, axes = plt.subplots(len(models), 2, figsize=(14, 6 * len(models)))
+    fig.suptitle('LightGBM vs XGBoost — ROC & Precision-Recall Curves', fontsize=14)
+
+    for row, name in enumerate(models):
+        d     = curve_data[name]
+        color = colors[name]
+        ax_roc, ax_pr = axes[row, 0], axes[row, 1]
+
+        # ── ROC ──
+        ax_roc.plot(d['fpr'], d['tpr'], color=color, lw=2,
+                    label=f'{name}  (AUC={d["roc_auc"]:.4f})')
+        ax_roc.plot([0, 1], [0, 1], 'k--', lw=1, label='No skill (AUC=0.50)')
+        ax_roc.set_xlabel('False Positive Rate')
+        ax_roc.set_ylabel('True Positive Rate (Recall)')
+        ax_roc.set_title(f'ROC Curve — {name}')
+        ax_roc.set_xlim([0, 1]); ax_roc.set_ylim([0, 1])
+        ax_roc.legend(); ax_roc.grid(True, alpha=0.3)
+
+        # ── PR ──
+        ax_pr.plot(d['pr_rec'], d['pr_prec'], color=color, lw=2,
+                   label=f'{name}  (PR-AUC={d["pr_auc"]:.4f})')
+        ax_pr.axhline(base_rate, color='gray', lw=1.5, linestyle='--',
+                      label=f'No skill (base rate={base_rate:.4f})')
+        ax_pr.scatter(d['best_recall'], d['best_precision'], color='red',
+                      marker='*', s=150, zorder=5,
+                      label=f'Threshold  P={d["best_precision"]:.3f}, R={d["best_recall"]:.3f}')
+        ax_pr.axvline(MIN_RECALL, color='gray', linestyle=':', lw=1,
+                      label=f'Min recall={MIN_RECALL}')
+        ax_pr.set_xlabel('Recall')
+        ax_pr.set_ylabel('Precision')
+        ax_pr.set_title(f'Precision-Recall Curve — {name}')
+        ax_pr.set_xlim([0, 1]); ax_pr.set_ylim([0, 1])
+        ax_pr.legend(fontsize=8); ax_pr.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plot_path = f'{out_dir}/combined_curves_{ts}.png'
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+    print(f"\nCombined curves saved to {plot_path}")
 
 
 def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='data', lag=0):
@@ -213,12 +222,14 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
         callbacks=[lgb.early_stopping(50), lgb.log_evaluation(50)],
     )
 
-    metrics = {}
+    metrics    = {}
+    curve_data = {}
 
     print("Running full test set prediction in chunks...")
     lgb_y_test, lgb_proba = _predict_in_chunks(lgb_model, test_parquet_path, feature_cols)
-    evaluate_model('LightGBM', lgb_y_test, lgb_proba, feature_cols,
-                   lgb_model.booster_.feature_importance(importance_type='gain'), ts, out_dir, metrics)
+    curve_data['LightGBM'] = evaluate_model(
+        'LightGBM', lgb_y_test, lgb_proba, feature_cols,
+        lgb_model.booster_.feature_importance(importance_type='gain'), metrics)
 
     lgb_model_path = f'{out_dir}/lightgbm_model_{ts}.txt'
     lgb_model.booster_.save_model(lgb_model_path)
@@ -250,14 +261,18 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
 
     print("Running full test set prediction in chunks...")
     xgb_y_test, xgb_proba = _predict_in_chunks(xgb_model, test_parquet_path, feature_cols)
-    evaluate_model('XGBoost', xgb_y_test, xgb_proba, feature_cols,
-                   xgb_model.feature_importances_, ts, out_dir, metrics)
+    curve_data['XGBoost'] = evaluate_model(
+        'XGBoost', xgb_y_test, xgb_proba, feature_cols,
+        xgb_model.feature_importances_, metrics)
 
     xgb_model_path = f'{out_dir}/xgboost_model_{ts}.json'
     xgb_model.save_model(xgb_model_path)
     print(f"XGBoost model saved to {xgb_model_path}")
 
-    # save metrics JSON for lag comparison plots
+    # combined plot — both models in one PNG
+    plot_combined_curves(curve_data, xgb_y_test, ts, out_dir)
+
+    # save metrics JSON
     metrics_path = f'{out_dir}/metrics_{ts}.json'
     with open(metrics_path, 'w') as f:
         json.dump({'ts': ts, **metrics}, f, indent=2)
@@ -267,16 +282,26 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
 
 
 if __name__ == "__main__":
-    LAG             = 0     # synchronous T→T
-    CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
-    BALANCED        = True  # True = balanced 50/50; False = raw unbalanced with scale_pos_weight
+    LAGS            = list(range(7))  # 0, 1, 2, 3, 4, 5, 6
+    CONVECTIVE_MASK = True            # must match build_tabular_dataset.py setting
+    BALANCED        = True            # True = use balanced/subsampled train set
+    RATIO           = 1               # 1 = 50/50, 50 = 50:1; must match balance_dataset.py
 
-    lag_str     = f"_lag{LAG}" if LAG > 0 else ""
-    mask_str    = "_convmask" if CONVECTIVE_MASK else ""
-    balance_str = "_balanced" if BALANCED else ""
+    mask_str = "_convmask" if CONVECTIVE_MASK else ""
+    if not BALANCED:
+        balance_str = ""
+    elif RATIO == 1:
+        balance_str = "_balanced"
+    else:
+        balance_str = f"_balanced{RATIO}to1"
 
-    train_lightgbm_and_xgboost(
-        train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}{mask_str}{balance_str}.parquet',
-        test_parquet_path=f'data/tabular_dataset_2025{lag_str}{mask_str}{balance_str}.parquet',
-        lag=LAG,
-    )
+    for LAG in LAGS:
+        lag_str = f"_lag{LAG}" if LAG > 0 else ""
+        print(f"\n{'#'*60}")
+        print(f"# LAG = {LAG}h")
+        print(f"{'#'*60}")
+        train_lightgbm_and_xgboost(
+            train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}{mask_str}{balance_str}.parquet',
+            test_parquet_path=f'data/tabular_dataset_2025{lag_str}{mask_str}.parquet',  # test is always unbalanced
+            lag=LAG,
+        )
