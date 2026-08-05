@@ -23,19 +23,22 @@ TRAIN_YEARS = [
     2023, 2024,                     # ILDN
 ]
 
+LAG             = 0     # set to 1,2,3... to unite lagged datasets
+CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
+BALANCED        = False # True = balanced; False = raw unbalanced parquets
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    LAG             = 0     # set to 1,2,3... to unite lagged datasets
-    CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
 
-    lag_str  = f"_lag{LAG}" if LAG > 0 else ""
-    mask_str = "_convmask" if CONVECTIVE_MASK else ""
+    lag_str     = f"_lag{LAG}" if LAG > 0 else ""
+    mask_str    = "_convmask" if CONVECTIVE_MASK else ""
+    balance_str = "_balanced" if BALANCED else ""
     parts    = []
     missing  = []
 
     for year in TRAIN_YEARS:
-        path = os.path.join(DATA_DIR, f'tabular_dataset_{year}{lag_str}{mask_str}_balanced.parquet')
+        path = os.path.join(DATA_DIR, f'tabular_dataset_{year}{lag_str}{mask_str}{balance_str}.parquet')
         if not os.path.exists(path):
             print(f"  ⚠  Missing: {path} — skipping year {year}")
             missing.append(year)
@@ -49,7 +52,7 @@ if __name__ == '__main__':
 
     years_used = [y for y in TRAIN_YEARS if y not in missing]
     years_str  = '_'.join(str(y) for y in years_used)
-    out_path   = os.path.join(DATA_DIR, f'tabular_dataset_{years_str}{lag_str}{mask_str}_balanced.parquet')
+    out_path   = os.path.join(DATA_DIR, f'tabular_dataset_{years_str}{lag_str}{mask_str}{balance_str}.parquet')
 
     df = pd.concat(parts).sort_values('time').reset_index(drop=True)
     print(f"\nCombined: {len(df):,} rows across years {years_used}")

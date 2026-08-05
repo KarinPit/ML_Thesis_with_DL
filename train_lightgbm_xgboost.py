@@ -4,16 +4,11 @@ import numpy as np
 import lightgbm as lgb
 import xgboost as xgb
 import pyarrow.parquet as pq
-from sklearn.metrics import classification_report, roc_auc_score, precision_recall_curve, roc_curve
+from sklearn.metrics import classification_report, roc_auc_score, average_precision_score, precision_recall_curve, roc_curve
 import matplotlib
 matplotlib.use('Agg')  # no display needed — saves to file
 import matplotlib.pyplot as plt
 import re
-
-# Minimum recall we're willing to accept when optimizing the threshold.
-MIN_RECALL   = 0.30
-EVAL_SAMPLE  = 200_000   # rows sampled from test parquet for early stopping
-PRED_CHUNK   = 100_000   # rows per chunk during full test prediction
 
 
 def _load_eval_sample(test_parquet_path, feature_cols):
@@ -117,11 +112,16 @@ def evaluate_model(model_name, y_test, y_proba, feature_cols, feature_importance
     print(f"\n── Top 20 most important features ──")
     print(importance.nlargest(20).to_string())
 
+    # PR-AUC
+    pr_auc = average_precision_score(y_test, y_proba)
+    print(f"\nPR-AUC (average precision): {pr_auc:.4f}")
+
     # save metrics for lag comparison plots
     if metrics_dict is not None:
         auc = roc_auc_score(y_test, y_proba)
         metrics_dict[model_name] = {
             'roc_auc':        auc,
+            'pr_auc':         pr_auc,
             'opt_threshold':  float(best_threshold),
             'opt_precision':  float(best_precision),
             'opt_recall':     float(best_recall),
@@ -165,19 +165,31 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
     print("\n" + "="*60)
     print("Training LightGBM...")
     print("="*60)
+    def _lgb_pr_auc(y_pred, dataset):
+        """Custom LightGBM eval metric: PR-AUC (average precision)."""
+        y_true = dataset.get_label()
+        score = average_precision_score(y_true, y_pred)
+        return 'pr_auc', score, True  # higher is better
+
+    n_pos = (y_train == 1).sum()
+    n_neg = (y_train == 0).sum()
+    lgb_scale = n_neg / n_pos
+    print(f"LightGBM scale_pos_weight: {lgb_scale:.1f}  ({n_pos:,} pos / {n_neg:,} neg)")
+
     lgb_model = lgb.LGBMClassifier(
         objective='binary',
         n_estimators=500,
         learning_rate=0.05,
         num_leaves=64,
         min_child_samples=20,
-        class_weight='balanced',
+        scale_pos_weight=lgb_scale,
         random_state=42,
         n_jobs=-1,
     )
     lgb_model.fit(
         X_train, y_train,
         eval_set=[(X_eval, y_eval)],
+        eval_metric=_lgb_pr_auc,
         callbacks=[lgb.early_stopping(50), lgb.log_evaluation(50)],
     )
 
@@ -206,7 +218,7 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
         scale_pos_weight=scale_pos_weight,
         random_state=42,
         n_jobs=-1,
-        eval_metric='logloss',
+        eval_metric='aucpr',
         early_stopping_rounds=50,
         verbosity=1,
     )
@@ -237,12 +249,19 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
 if __name__ == "__main__":
     LAG             = 0     # synchronous T→T
     CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
+    BALANCED        = False # True = balanced 50/50; False = raw unbalanced with scale_pos_weight
+    
+    # Minimum recall we're willing to accept when optimizing the threshold.
+    MIN_RECALL   = 0.30
+    EVAL_SAMPLE  = 200_000   # rows sampled from test parquet for early stopping
+    PRED_CHUNK   = 100_000   # rows per chunk during full test prediction
 
-    lag_str  = f"_lag{LAG}" if LAG > 0 else ""
-    mask_str = "_convmask" if CONVECTIVE_MASK else ""
+    lag_str     = f"_lag{LAG}" if LAG > 0 else ""
+    mask_str    = "_convmask" if CONVECTIVE_MASK else ""
+    balance_str = "_balanced" if BALANCED else ""
 
     train_lightgbm_and_xgboost(
-        train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}{mask_str}_balanced.parquet',
+        train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}{mask_str}{balance_str}.parquet',
         test_parquet_path=f'data/tabular_dataset_2025{lag_str}{mask_str}.parquet',
         lag=LAG,
     )

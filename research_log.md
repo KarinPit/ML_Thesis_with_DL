@@ -452,6 +452,42 @@ Note: **2,681 real lightning events (~22%) were masked out** — these occurred 
 
 ---
 
+## Experiment 6 — Training Metric Experiments (aucpr early stopping)
+
+*Date: August 2026*
+
+### Motivation
+The PR curve from Experiment 5 showed very low precision (~0.022–0.028) across all operating points, even with AUC ~0.92. The question was whether this could be improved by changing the training objective/metric rather than the data or architecture.
+
+### Experiments Attempted
+
+**6a — aucpr early stopping (balanced 50/50 training):**
+Changed XGBoost `eval_metric` from `'logloss'` to `'aucpr'`, and added a custom PR-AUC eval function to LightGBM (`average_precision_score`). Training data remained the balanced 50/50 convmask parquet.
+
+Results (XGBoost):
+- ROC-AUC: 0.9214 (vs 0.9174 in Exp 5) — slight improvement
+- Precision at recall=0.30: 0.0267 (vs 0.022 in Exp 5) — slight improvement
+- PR curve shape: unchanged — flat at ~0.027 across all recall values
+
+**6b — Unbalanced training (scale_pos_weight=99):**
+Attempted to train on raw unbalanced parquets (all non-lightning rows included) with `scale_pos_weight` set to the true class ratio (~99), and `eval_metric='aucpr'`. Process killed (OOM) on EC2 after loading only 4 years of data — unbalanced data is ~20M rows for 4 years, too large for available RAM.
+
+**6c — Intermediate ratio (10:1 sampling):**
+Discussed but not attempted. Theoretically equivalent to 50:50 + scale_pos_weight=99 in terms of gradient signal — not worth implementing.
+
+### Key Finding
+
+**The precision ceiling is fundamental to ERA5 resolution, not a training configuration issue.** No combination of class weights, sampling ratios, or training metrics can raise the PR curve when the bottleneck is that ERA5 at 0.25° cannot resolve individual storm cells. The model assigns moderately high probabilities (~0.5–0.9) to many convective-looking cells, but needs a threshold of ~0.90 to achieve even 2.7% precision — showing that most convective environments don't produce lightning in any specific cell at any specific hour.
+
+### Conclusions on Precision/Recall
+
+- **ROC-AUC is a genuine and meaningful metric** — it measures ranking ability, not threshold-dependent precision. AUC 0.92 means the model correctly ranks lightning cells above non-lightning cells 92% of the time.
+- **PR-AUC and precision are fundamentally limited** by the ~1% base rate and 28 km grid resolution. Many non-lightning cells look atmospherically identical to lightning cells at ERA5 scale, because the sub-grid storm initiation processes are invisible to the model.
+- **The model is best framed as a regional lightning risk index**, not a cell-level predictor. This is consistent with how other ERA5-scale lightning papers interpret their results (e.g., Ehrensperger et al. 2025, MCC=0.278 on Eastern Alps).
+- **Improvement requires higher-resolution features** (storm-resolving NWP, radar) and spatial context (U-Net) — both of which are the stated next step of this thesis.
+
+---
+
 ## Next Steps
 - [x] Complete Experiment 3 training and evaluate results
 - [x] Test lagged prediction (T-1 through T-6)
