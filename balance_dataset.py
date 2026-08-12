@@ -62,7 +62,7 @@ def balance_dataset(input_path, output_path,
 
 
 if __name__ == "__main__":
-    LAGS            = [12, 24, 48]
+    LAGS  = [0, 1, 3, 6, 12, 24, 48]
     CONVECTIVE_MASK = True            # must match build_tabular_dataset.py setting
 
     LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]

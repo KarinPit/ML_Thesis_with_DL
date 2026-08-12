@@ -23,7 +23,7 @@ TRAIN_YEARS = [
     2023, 2024,                     # ILDN
 ]
 
-LAGS            = [0, 1, 2, 3, 4, 5, 6, 12, 24, 48]
+LAGS  = [0, 1, 3, 6, 12, 24, 48]
 CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
 BALANCED        = True  # True = balanced; False = raw unbalanced parquets
 RATIO           = 1    # no-lightning rows per lightning row (1 = 50/50, 50 = 50:1); only used when BALANCED=True
