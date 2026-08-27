@@ -114,8 +114,11 @@ class LightningUNet(nn.Module):
         self.up2    = nn.ConvTranspose2d(16, 32, kernel_size=2, stride=2)
         self.dec2   = ConvBlock(32, 32)
 
-        # Output — raw continuous value (density regression, no activation)
-        self.out = nn.Conv2d(32, 1, kernel_size=1)
+        # Output — sigmoid for binary classification
+        self.out = nn.Sequential(
+            nn.Conv2d(32, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
         # Encoder
@@ -191,16 +194,14 @@ class LightningGridDataset(Dataset):
         )
         X = X.transpose(2, 0, 1).astype(np.float32)   # (7, H, W)
 
-        # Target: lightning density (H*W,) → (1, H, W)
-        y = snap['lightning_count'].values.reshape(
+        # Target: binary presence/absence (H*W,) → (1, H, W)
+        y = (snap['lightning_count'].values > 0).reshape(
             self.grid_h, self.grid_w
         ).astype(np.float32)[np.newaxis]               # (1, H, W)
 
-        # z-score normalization (Jones et al. normalize both inputs and output)
+        # z-score normalization on features only (target is binary)
         if self.feat_mean is not None:
             X = (X - self.feat_mean[:, None, None]) / (self.feat_std[:, None, None] + 1e-8)
-        if self.tgt_mean is not None:
-            y = (y - self.tgt_mean) / (self.tgt_std + 1e-8)
 
         return torch.from_numpy(X), torch.from_numpy(y)
 
@@ -307,7 +308,7 @@ def evaluate(model, loader, criterion, device):
                 y = y[:, :, :pred.shape[2], :pred.shape[3]]
             loss = criterion(pred, y)
             total_loss += loss.item() * X.size(0)
-            total_fss  += compute_fss(pred, y)
+            total_fss  += compute_fss(pred, y, threshold=0.5)
             n_batches  += 1
     mean_fss = total_fss / n_batches if n_batches > 0 else 0.0
     return total_loss / len(loader.dataset), mean_fss
@@ -376,7 +377,7 @@ if __name__ == '__main__':
     # Model
     model     = LightningUNet(in_channels=len(FEATURE_COLS)).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    criterion = nn.MSELoss()
+    criterion = nn.BCELoss()
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=5, factor=0.5
     )
