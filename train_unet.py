@@ -58,15 +58,15 @@ GRID_H = None
 GRID_W = None
 
 TRAIN_PARQUETS = [
-    'data/tabular_dataset_2004_convmask.parquet',
-    'data/tabular_dataset_2005_convmask.parquet',
-    'data/tabular_dataset_2006_convmask.parquet',
-    'data/tabular_dataset_2008_convmask.parquet',
-    'data/tabular_dataset_2009_convmask.parquet',
-    'data/tabular_dataset_2023_convmask.parquet',
-    'data/tabular_dataset_2024_convmask.parquet',
+    'data/tabular_dataset_2004.parquet',
+    'data/tabular_dataset_2005.parquet',
+    'data/tabular_dataset_2006.parquet',
+    'data/tabular_dataset_2008.parquet',
+    'data/tabular_dataset_2009.parquet',
+    'data/tabular_dataset_2023.parquet',
+    'data/tabular_dataset_2024.parquet',
 ]
-TEST_PARQUET = 'data/tabular_dataset_2025_convmask.parquet'
+TEST_PARQUET = 'data/tabular_dataset_2025.parquet'
 
 BATCH_SIZE  = 32
 EPOCHS      = 50
@@ -114,8 +114,8 @@ class LightningUNet(nn.Module):
         self.up2    = nn.ConvTranspose2d(16, 32, kernel_size=2, stride=2)
         self.dec2   = ConvBlock(32, 32)
 
-        # Output
-        self.out    = nn.Conv2d(32, 1, kernel_size=1)
+        # Output — raw continuous value (density regression, no activation)
+        self.out = nn.Conv2d(32, 1, kernel_size=1)
 
     def forward(self, x):
         # Encoder
@@ -167,9 +167,14 @@ class LightningGridDataset(Dataset):
             dfs.append(pd.read_parquet(path, columns=cols))
         self.df = pd.concat(dfs, ignore_index=True)
 
-        # Group by time → each group is one spatial grid snapshot
-        self.times = self.df['time'].unique()
-        self.times.sort()
+        # Sort once, build (start, end) index per timestep — O(1) lookup, no extra RAM
+        self.df = self.df.sort_values('time').reset_index(drop=True)
+        time_arr   = self.df['time'].values
+        boundaries = np.where(time_arr[:-1] != time_arr[1:])[0] + 1
+        starts     = np.concatenate([[0], boundaries])
+        ends       = np.concatenate([boundaries, [len(self.df)]])
+        self.times = np.sort(time_arr[starts])
+        self.time_slices = {t: (int(s), int(e)) for t, s, e in zip(self.times, starts, ends)}
         print(f"  Dataset: {len(self.times):,} timesteps × {grid_h}×{grid_w} grid")
 
     def __len__(self):
@@ -177,7 +182,8 @@ class LightningGridDataset(Dataset):
 
     def __getitem__(self, idx):
         t = self.times[idx]
-        snap = self.df[self.df['time'] == t]
+        s, e = self.time_slices[t]
+        snap = self.df.iloc[s:e]
 
         # Features: (H*W, 7) → (7, H, W)
         X = snap[self.feature_cols].values.reshape(
@@ -185,12 +191,12 @@ class LightningGridDataset(Dataset):
         )
         X = X.transpose(2, 0, 1).astype(np.float32)   # (7, H, W)
 
-        # Target: (H*W,) → (1, H, W)
+        # Target: lightning density (H*W,) → (1, H, W)
         y = snap['lightning_count'].values.reshape(
             self.grid_h, self.grid_w
         ).astype(np.float32)[np.newaxis]               # (1, H, W)
 
-        # z-score normalization
+        # z-score normalization (Jones et al. normalize both inputs and output)
         if self.feat_mean is not None:
             X = (X - self.feat_mean[:, None, None]) / (self.feat_std[:, None, None] + 1e-8)
         if self.tgt_mean is not None:
@@ -249,9 +255,9 @@ def train(model, loader, optimizer, criterion, device):
         X, y = X.to(device), y.to(device)
         optimizer.zero_grad()
         pred = model(X)
-        # match spatial size if padding caused mismatch
+        # crop y to pred's size (pred may be smaller due to odd spatial dims)
         if pred.shape != y.shape:
-            pred = pred[:, :, :y.shape[2], :y.shape[3]]
+            y = y[:, :, :pred.shape[2], :pred.shape[3]]
         loss = criterion(pred, y)
         loss.backward()
         optimizer.step()
@@ -259,18 +265,52 @@ def train(model, loader, optimizer, criterion, device):
     return total_loss / len(loader.dataset)
 
 
+def compute_fss(pred, target, threshold=0.0, window=3):
+    """
+    Fractions Skill Score (Roberts & Lean, 2008) with a square neighbourhood.
+    FSS = 1 - MSE(fractions) / ref_MSE
+    where ref_MSE = (mean(O_frac²) + mean(M_frac²)).
+
+    pred, target : torch tensors shape (B, 1, H, W), in normalised space.
+    threshold    : scalar in normalised space (default 0 = above-mean density).
+    window       : neighbourhood size (Jones et al. use 3×3).
+    """
+    import torch.nn.functional as F
+    with torch.no_grad():
+        obs_bin  = (target > threshold).float()
+        pred_bin = (pred   > threshold).float()
+
+        kernel = torch.ones(1, 1, window, window, device=pred.device) / (window * window)
+        pad    = window // 2
+
+        obs_frac  = F.conv2d(obs_bin,  kernel, padding=pad, groups=1)
+        pred_frac = F.conv2d(pred_bin, kernel, padding=pad, groups=1)
+
+        mse_frac = ((pred_frac - obs_frac) ** 2).mean().item()
+        ref      = (pred_frac ** 2 + obs_frac ** 2).mean().item()
+
+        if ref < 1e-12:
+            return 1.0   # no lightning in either field → perfect score
+        return 1.0 - mse_frac / ref
+
+
 def evaluate(model, loader, criterion, device):
     model.eval()
     total_loss = 0.0
+    total_fss  = 0.0
+    n_batches  = 0
     with torch.no_grad():
         for X, y in loader:
             X, y = X.to(device), y.to(device)
             pred = model(X)
             if pred.shape != y.shape:
-                pred = pred[:, :, :y.shape[2], :y.shape[3]]
+                y = y[:, :, :pred.shape[2], :pred.shape[3]]
             loss = criterion(pred, y)
             total_loss += loss.item() * X.size(0)
-    return total_loss / len(loader.dataset)
+            total_fss  += compute_fss(pred, y)
+            n_batches  += 1
+    mean_fss = total_fss / n_batches if n_batches > 0 else 0.0
+    return total_loss / len(loader.dataset), mean_fss
 
 
 # ── Padding helper ────────────────────────────────────────────────────────────
@@ -338,26 +378,27 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     criterion = nn.MSELoss()
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=5, factor=0.5, verbose=True
+        optimizer, patience=5, factor=0.5
     )
 
     print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Training on {len(train_ds):,} timesteps, testing on {len(test_ds):,}")
 
     # Training loop
-    train_losses, test_losses = [], []
+    train_losses, test_losses, fss_scores = [], [], []
     best_test_loss = float('inf')
 
     for epoch in range(1, EPOCHS + 1):
-        train_loss = train(model, train_loader, optimizer, criterion, DEVICE)
-        test_loss  = evaluate(model, test_loader, criterion, DEVICE)
+        train_loss            = train(model, train_loader, optimizer, criterion, DEVICE)
+        test_loss, mean_fss   = evaluate(model, test_loader, criterion, DEVICE)
         scheduler.step(test_loss)
 
         train_losses.append(train_loss)
         test_losses.append(test_loss)
+        fss_scores.append(mean_fss)
 
         print(f"Epoch {epoch:3d}/{EPOCHS}  "
-              f"train_loss={train_loss:.6f}  test_loss={test_loss:.6f}")
+              f"train_loss={train_loss:.6f}  test_loss={test_loss:.6f}  FSS={mean_fss:.4f}")
 
         # Save best model
         if test_loss < best_test_loss:
@@ -369,16 +410,22 @@ if __name__ == '__main__':
     torch.save(model.state_dict(), os.path.join(OUT_DIR, 'unet_final.pt'))
 
     # Loss curve
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Train MSE')
-    plt.plot(test_losses,  label='Test MSE')
-    plt.xlabel('Epoch')
-    plt.ylabel('MSE Loss')
-    plt.title('U-Net Training — Jones et al. (2026) Architecture')
-    plt.legend()
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    ax1.plot(train_losses, label='Train MSE')
+    ax1.plot(test_losses,  label='Test MSE')
+    ax1.set_xlabel('Epoch'); ax1.set_ylabel('MSE Loss')
+    ax1.set_title('U-Net Training — Jones et al. (2026) Architecture')
+    ax1.legend(); ax1.grid(True, alpha=0.3)
+
+    ax2.plot(fss_scores, color='green', label='FSS (3×3 window, threshold=0)')
+    ax2.set_xlabel('Epoch'); ax2.set_ylabel('FSS')
+    ax2.set_title('Fractions Skill Score on Test Set')
+    ax2.set_ylim([0, 1]); ax2.legend(); ax2.grid(True, alpha=0.3)
+
     plt.tight_layout()
     plt.savefig(os.path.join(OUT_DIR, 'loss_curve.png'), dpi=150)
     plt.close()
 
     print(f"\nBest test loss: {best_test_loss:.6f}")
+    print(f"Best FSS:       {max(fss_scores):.4f}")
     print(f"Outputs saved to {OUT_DIR}/")

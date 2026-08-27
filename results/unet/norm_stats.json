@@ -1,0 +1,33 @@
+{
+  "feat_mean": [
+    5.621460559268598e-07,
+    8.378662528230052e-07,
+    4.203566561500338e-07,
+    35.492218017578125,
+    1.2873991863671108e-06,
+    2.9619591259688605e-06,
+    120.2242660522461
+  ],
+  "feat_std": [
+    4.0969980545924045e-06,
+    5.904393674427411e-06,
+    2.9278837700985605e-06,
+    9.33640193939209,
+    8.517470632796176e-06,
+    1.4222178833733778e-05,
+    390.6663818359375
+  ],
+  "tgt_mean": 0.007771808786234354,
+  "tgt_std": 0.4778753084722767,
+  "grid_h": 37,
+  "grid_w": 46,
+  "features": [
+    "specific_cloud_ice_water_content_600hPa",
+    "specific_cloud_ice_water_content_550hPa",
+    "specific_cloud_ice_water_content_650hPa",
+    "total_totals_index",
+    "specific_cloud_ice_water_content_500hPa",
+    "specific_cloud_liquid_water_content_700hPa",
+    "convective_available_potential_energy"
+  ]
+}
