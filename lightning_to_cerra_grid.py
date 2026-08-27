@@ -117,21 +117,21 @@ def build_lightning_cerra_grid(
 
     # ── Load CERRA grid ───────────────────────────────────────────────────────
     ds = xr.open_dataset(cerra_pressure_path)
-    cerra_times = pd.to_datetime(ds.time.values)
+    cerra_times = pd.to_datetime(ds.valid_time.values)
 
     # CERRA NetCDF4 has 2D latitude/longitude auxiliary arrays
     # These are named 'latitude' and 'longitude' (2D, shape y × x)
     # Some files use 'lat'/'lon' — handle both
     if 'latitude' in ds.coords:
-        lat2d = ds['latitude'].values
-        lon2d = ds['longitude'].values
+        lat2d = ds.coords['latitude'].values
+        lon2d = ds.coords['longitude'].values
     elif 'lat' in ds.coords:
-        lat2d = ds['lat'].values
-        lon2d = ds['lon'].values
+        lat2d = ds.coords['lat'].values
+        lon2d = ds.coords['lon'].values
     else:
         # Try as data variables
-        lat2d = ds['latitude'].values if 'latitude' in ds else ds['lat'].values
-        lon2d = ds['longitude'].values if 'longitude' in ds else ds['lon'].values
+        lat2d = ds.coords['latitude'].values if 'latitude' in ds else ds.coords['lat'].values
+        lon2d = ds.coords['longitude'].values if 'longitude' in ds else ds.coords['lon'].values
 
     n_y, n_x = lat2d.shape
     n_cells   = n_y * n_x
@@ -237,26 +237,28 @@ def build_lightning_cerra_grid(
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
+    import netCDF4 as nc
     XLS_DIR = 'data/lpats_xls'
 
     LPATS_YEARS = [2004, 2005, 2006, 2008, 2009]
     ILDN_YEARS  = [2023, 2024, 2025]
 
-    # ── LPATS ─────────────────────────────────────────────────────────────────
-    print("Loading all LPATS XLS files...")
-    df_lpats = load_all_lpats(XLS_DIR)
+    # # ── LPATS ─────────────────────────────────────────────────────────────────
+    # print("Loading all LPATS XLS files...")
+    # df_lpats = load_all_lpats(XLS_DIR)
 
-    for year in LPATS_YEARS:
-        cerra_path = f'data/cerra_pressure_level_{year}.nc'
-        if not os.path.exists(cerra_path):
-            print(f"Skipping LPATS {year} — CERRA not downloaded ({cerra_path})")
-            continue
-        build_lightning_cerra_grid(
-            df_strikes=df_lpats,
-            cerra_pressure_path=cerra_path,
-            year=year,
-            source='lpats',
-        )
+    # for year in LPATS_YEARS:
+    #     cerra_path = f'data/cerra_pressure_level_{year}.nc'
+    #     ds_raw = nc.Dataset(cerra_path)
+    #     if not os.path.exists(cerra_path):
+    #         print(f"Skipping LPATS {year} — CERRA not downloaded ({cerra_path})")
+    #         continue
+    #     build_lightning_cerra_grid(
+    #         df_strikes=df_lpats,
+    #         cerra_pressure_path=cerra_path,
+    #         year=year,
+    #         source='lpats',
+    #     )
 
     # ── ILDN ──────────────────────────────────────────────────────────────────
     for year in ILDN_YEARS:

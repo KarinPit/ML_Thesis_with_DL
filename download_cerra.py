@@ -3,17 +3,14 @@ download_cerra.py
 -----------------
 Download CERRA reanalysis pressure-level data via CDS API.
 
+Downloads one month at a time to stay within CDS size limits, then merges
+into yearly NetCDF files (same pattern as download_era5_arco.py).
+
 CERRA differences from ERA5:
   - 5.5 km resolution, Lambert conformal conic projection
   - 3-hourly temporal resolution (analysis product)
-  - 29 pressure levels (vs ERA5's 37)
-  - NetCDF4 format
-  - No CAPE, K-index, Total Totals Index (pressure levels only)
-  - Has: rain/snow water content, turbulent kinetic energy, cloud cover
-
-Note: CERRA has no useful single-level stability indices (no CAPE etc.).
-All features come from pressure levels. Cloud ice at 500-700 hPa was the
-dominant ERA5 feature anyway (>53% gain in XGBoost), so this is fine.
+  - No geographic subsetting — full European domain downloaded, clipped later
+  - No CAPE, K-index, Total Totals Index
 
 Usage:
     python download_cerra.py
@@ -21,10 +18,7 @@ Usage:
 
 import os
 import cdsapi
-
-# ── Domain (same as ERA5) ─────────────────────────────────────────────────────
-# CERRA area format: [North, West, South, East]
-AREA = [37.0, 27.0, 27.0, 40.0]
+import xarray as xr
 
 # ── Variables ─────────────────────────────────────────────────────────────────
 PRESSURE_VARS = [
@@ -41,67 +35,84 @@ PRESSURE_VARS = [
     'cloud_cover',
 ]
 
-# All 29 CERRA pressure levels (hPa)
-PRESSURE_LEVELS = [
-    '1000', '975', '950', '925', '900', '875', '850', '825', '800',
-    '750', '700', '600', '500', '400', '300', '250', '200', '150',
-    '100', '70', '50', '30', '20', '10', '7', '5', '3', '2', '1',
-]
+# Only the 3 levels in the mixed-phase / charge-separation zone (500–700 hPa).
+# Cloud ice at 500–600 hPa was the dominant feature in ERA5 experiments
+# (>53% XGBoost gain). Adding more levels can be done later if needed.
+PRESSURE_LEVELS = ['500', '600', '700']
 
 # 3-hourly analysis times
 TIMES = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
 
 ALL_DAYS = [f'{d:02d}' for d in range(1, 32)]
-ALL_MONTHS = [f'{m:02d}' for m in range(1, 13)]
 
 
 def _months_for_year(year):
-    """Return (months, days) to download for each LPATS/ILDN year.
-    Mirrors the partial-year ranges used for ERA5 downloads."""
+    """Months to download per year — mirrors ERA5 LPATS partial-year ranges."""
     ranges = {
-        2004: (['09', '10', '11', '12'], ALL_DAYS),
-        2005: (['01', '02', '03', '04', '05', '06',
-                '07', '08', '09', '10', '11'], ALL_DAYS),
-        2006: (['01', '02', '03', '04', '05', '06', '07', '08'], ALL_DAYS),
-        2008: (['09', '10', '11', '12'], ALL_DAYS),
-        2009: (['01', '02', '03', '04', '05', '06', '07', '08', '09'], ALL_DAYS),
-        # ILDN years — full year
-        2023: (ALL_MONTHS, ALL_DAYS),
-        2024: (ALL_MONTHS, ALL_DAYS),
-        2025: (ALL_MONTHS, ALL_DAYS),
+        2004: ['09', '10', '11', '12'],
+        2005: ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11'],
+        2006: ['01', '02', '03', '04', '05', '06', '07', '08'],
+        2008: ['09', '10', '11', '12'],
+        2009: ['01', '02', '03', '04', '05', '06', '07', '08', '09'],
+        2023: [f'{m:02d}' for m in range(1, 13)],
+        2024: [f'{m:02d}' for m in range(1, 13)],
+        2025: [f'{m:02d}' for m in range(1, 13)],
     }
-    return ranges.get(year, (ALL_MONTHS, ALL_DAYS))
+    return ranges.get(year, [f'{m:02d}' for m in range(1, 13)])
 
 
 def download_cerra_year(year, out_dir='data'):
-    """Download CERRA pressure-level data for one year."""
+    """Download CERRA pressure-level data for one year, month by month."""
     c = cdsapi.Client()
+    os.makedirs(out_dir, exist_ok=True)
 
-    months, days = _months_for_year(year)
-    pressure_path = f'{out_dir}/cerra_pressure_level_{year}.nc'
+    final_path = f'{out_dir}/cerra_pressure_level_{year}.nc'
+    if os.path.exists(final_path):
+        print(f"  {final_path} already exists, skipping.")
+        return final_path
 
-    if os.path.exists(pressure_path):
-        print(f"  {pressure_path} already exists, skipping.")
-    else:
-        print(f"\nDownloading CERRA pressure levels for {year}...")
+    months = _months_for_year(year)
+    tmp_files = []
+
+    for month in months:
+        tmp_path = f'{out_dir}/tmp_cerra_{year}_{month}.nc'
+        tmp_files.append(tmp_path)
+
+        if os.path.exists(tmp_path):
+            print(f"  {year}-{month} already downloaded, skipping.")
+            continue
+
+        print(f"  Downloading {year}-{month}...")
         c.retrieve(
             'reanalysis-cerra-pressure-levels',
             {
                 'variable':       PRESSURE_VARS,
                 'pressure_level': PRESSURE_LEVELS,
-                'product_type':   'reanalysis',
+                'data_type':      ['reanalysis'],
+                'product_type':   ['analysis'],
                 'year':           str(year),
-                'month':          months,
-                'day':            days,
+                'month':          month,
+                'day':            ALL_DAYS,
                 'time':           TIMES,
                 'data_format':    'netcdf',
-                'area':           AREA,
             },
-            pressure_path,
+            tmp_path,
         )
-        print(f"  Saved: {pressure_path}")
+        print(f"    Saved: {tmp_path}")
 
-    return pressure_path
+    # merge monthly files into one yearly file
+    print(f"\nMerging {len(tmp_files)} months into {final_path}...")
+    xr.open_mfdataset(tmp_files, combine='by_coords',
+                      chunks={'time': 50}).to_netcdf(final_path)
+
+    # clean up monthly temp files
+    print("Cleaning up monthly temp files...")
+    for f in tmp_files:
+        if os.path.exists(f):
+            os.remove(f)
+
+    print(f"Done: {final_path}")
+    return final_path
 
 
 if __name__ == '__main__':
