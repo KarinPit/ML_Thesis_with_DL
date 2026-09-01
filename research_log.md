@@ -521,6 +521,29 @@ Discussed but not attempted. Theoretically equivalent to 50:50 + scale_pos_weigh
 
 ---
 
+## Ideas for Further Research
+
+### 1. ⭐ Transfer Learning from Jones et al. Weights (TOP PRIORITY)
+Obtain Jones et al.'s pre-trained U-Net weights (email authors / check GitHub/Zenodo) and apply transfer learning for the Israel/E. Med domain:
+- **Freeze the encoder** — it has learned global convective spatial patterns; keep those weights fixed
+- **Retrain the decoder** — adapt the output mapping to the regional domain and its sparse lightning climatology
+- **Input channel strategy for extra features:** keep the original 7 CPLRSTW channels (frozen in conv1), add fresh weight columns for additional XGBoost-selected channels (cloud ice water content, total totals index). This requires modifying the first conv layer to accept 7+N channels while initializing the extra N channels randomly
+- **Compare against:** (a) training from scratch on regional data (Exp 7b), (b) Jones weights + original 7 features only (frozen encoder, retrained decoder, no new channels)
+
+This is the most promising direction: leverages global training data at zero cost while allowing regional adaptation.
+
+### 2. Global Training, Regional Testing
+Train a U-Net on global ERA5 + WWLLN data (replicating Jones et al. scale) and test on the Israel/E. Med domain. Run two variants:
+- Using Jones's CPLRSTW variable set (CAPE, precipitation, LSM, RH, wind shear, T2M, warm cloud depth)
+- Using the physically meaningful variables identified by XGBoost in this thesis (cloud ice water content at 500–700 hPa, total totals index, CAPE, cloud liquid water content)
+
+This directly tests whether a globally-trained parameterization generalizes to a small, lightning-sparse region, and whether domain-specific feature selection adds value over a physically-motivated global feature set.
+
+### 2. Jones Variable Set on Current Domain
+Download the ERA5 variables Jones used that are currently missing (u/v wind components, relative humidity at 500/1000 hPa, 2m temperature, land-sea mask, total precipitation or IMERG) and re-train the same U-Net architecture on the current temporal (2004–2025) and geographic (Israel/E. Med) domain. Compare directly against Experiment 7b (LightGBM-selected features) to isolate the effect of feature choice from architecture and domain.
+
+---
+
 ## Next Steps
 
 - [X] Complete Experiment 3 training and evaluate results
@@ -723,3 +746,19 @@ Note: output is 36×44 not 37×46 — odd spatial dims lose 1 pixel through MaxP
 - Loss curve axis labels say "MSE" — cosmetic bug, loss is BCE
 
 **Conclusion:** Binary BCE works well for a sparse regional domain. FSS ~0.61 at best, ~0.56 sustained — the model successfully learns spatial lightning patterns. Best model saved at epoch 8.
+
+### R² Evaluation (evaluate_unet.py, unet_best.pt)
+
+| Metric | Value | Jones et al. best |
+|--------|-------|-------------------|
+| Per-timestep r² (lightning timesteps only) | 0.0050 | — |
+| Climatological r² (mean spatial map) | 0.3521 | 0.92 (ocean), 0.77 (land) |
+
+**Per-timestep r² = 0.005** is expected and not meaningful for binary classification — r² between a continuous predicted probability and a binary {0,1} target is inherently near zero even for a well-performing model. Jones used FSS for timestep-level evaluation, not r².
+
+**Climatological r² = 0.35** is the comparable metric to Jones. The gap vs Jones's 0.92 is explained by:
+- **Domain**: Jones's global domain has enormous geographic diversity (tropics, ocean, land) making climatological patterns easy to reproduce. Israel/E. Med is small and homogeneous — little geographic lightning gradient to exploit.
+- **Task mismatch**: Jones predicted lightning density (MSE regression) so their mean map directly matches observed density. Binary BCE output averages to a probability map, which compresses dynamic range — the model underestimates high-frequency cells (visible in scatter plot).
+- **Data**: Jones trained on 11 years globally; this model uses 7 years over a small region.
+
+**The r² = 0.35 is not directly comparable to Jones's 0.92** — different task, domain, and output type. FSS ~0.61 is the more appropriate comparison metric and is only ~0.08 below Jones's mean FSS of 0.69 despite the much smaller, sparser domain.
