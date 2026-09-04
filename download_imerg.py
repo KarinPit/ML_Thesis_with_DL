@@ -41,25 +41,48 @@ ERA5_LONS = np.arange(np.ceil(LON_MIN * 4) / 4, LON_MAX + 0.001, 0.25)
 # ── IMERG product ──────────────────────────────────────────────────────────────
 IMERG_SHORT_NAME = 'GPM_3IMERGHH'
 IMERG_VERSION    = '07'
-PRECIP_VAR       = 'precipitationCal'   # calibrated precipitation, mm/hr
+PRECIP_VAR       = 'precipitation'   # V07: 'precipitation'; V06: 'precipitationCal'
+
+
+def inspect_imerg_file(filepath):
+    """Print HDF5 structure of one IMERG file — use for debugging."""
+    def print_tree(name, obj):
+        print(f"  {name}: {obj}")
+    with h5py.File(filepath, 'r') as f:
+        print(f"\n=== IMERG file structure: {os.path.basename(filepath)} ===")
+        f.visititems(print_tree)
+        if 'Grid' in f:
+            print(f"\nGrid keys: {list(f['Grid'].keys())}")
+            if PRECIP_VAR in f['Grid']:
+                print(f"  {PRECIP_VAR} shape: {f['Grid'][PRECIP_VAR].shape}")
+            if 'time' in f['Grid']:
+                print(f"  time: {f['Grid']['time'][:]}")
+                print(f"  time attrs: {dict(f['Grid']['time'].attrs)}")
 
 
 def read_imerg_granule(filepath):
     """Read one IMERG HDF5 half-hourly file → (time, lat, lon, precip_mm_hr)."""
     with h5py.File(filepath, 'r') as f:
-        # IMERG HDF5 structure: /Grid/precipitationCal shape (1, lon, lat)
-        precip = f[f'Grid/{PRECIP_VAR}'][0]   # shape: (lon, lat)
-        lons   = f['Grid/lon'][:]             # 0.1° grid, -180 to 180
-        lats   = f['Grid/lat'][:]             # 0.1° grid, -90 to 90
+        # V07: precipitation shape is (1, lon, lat)
+        grid   = f['Grid']
+        var    = PRECIP_VAR if PRECIP_VAR in grid else 'precipitationCal'
+        precip = grid[var][0]          # (lon, lat) after dropping time dim
+        lons   = f['Grid/lon'][:]      # shape (3600,)
+        lats   = f['Grid/lat'][:]      # shape (1800,)
 
-        # Read time (minutes since 1970-01-01)
-        t_ms   = f['Grid/time'][0]
-        time   = pd.Timestamp('1970-01-01') + pd.Timedelta(minutes=int(t_ms))
+        # Time: IMERG V07 uses GPS epoch = 1980-01-06 00:00:00 UTC
+        t_val  = int(f['Grid/time'][0])
+        t_unit = f['Grid/time'].attrs.get('units', b'seconds since 1980-01-06 00:00:00 UTC')
+        t_unit = t_unit.decode() if isinstance(t_unit, bytes) else t_unit
+        # Parse reference date from units string e.g. "seconds since 1980-01-06 00:00:00 UTC"
+        ref_str = t_unit.split('since')[-1].strip().replace(' UTC', '')
+        ref     = pd.Timestamp(ref_str)
+        time    = ref + pd.Timedelta(seconds=t_val)
 
-    # precip shape is (lon, lat) — transpose to (lat, lon)
-    precip = precip.T   # now (lat, lon)
+    # shape after [0]: (lon=3600, lat=1800) — transpose to (lat, lon)
+    precip = precip.T   # now (lat=1800, lon=3600)
+
     precip = np.where(precip < 0, 0.0, precip)   # mask fill values (-9999)
-
     return time, lats, lons, precip
 
 
@@ -97,10 +120,6 @@ def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg'):
         print(f"Output already exists: {out_path}")
         return out_path
 
-    # ── Authenticate ──────────────────────────────────────────────────────────
-    print("Authenticating with NASA Earthdata...")
-    earthaccess.login(strategy="netrc")   # uses ~/.netrc after first login
-
     # ── Search for granules ───────────────────────────────────────────────────
     print(f"Searching IMERG granules: {time_range.start} → {time_range.stop}")
     results = earthaccess.search_data(
@@ -119,6 +138,10 @@ def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg'):
 
     # ── Read, crop, regrid all granules ──────────────────────────────────────
     print("Reading and regridding granules...")
+    # Inspect first file to verify structure
+    if files:
+        inspect_imerg_file(files[0])
+
     records = []   # list of (time, precip_array)
     for fpath in files:
         try:
@@ -126,18 +149,20 @@ def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg'):
             p_regrid = crop_and_regrid(lats_src, lons_src, precip, ERA5_LATS, ERA5_LONS)
             records.append((t, p_regrid))
         except Exception as e:
-            print(f"  WARNING: could not read {fpath}: {e}")
+            print(f"  WARNING: could not read {os.path.basename(fpath)}: {e}")
+
+    print(f"Successfully read {len(records)} / {len(files)} granules")
 
     # ── Aggregate two 30-min granules → one hourly value ─────────────────────
     print("Aggregating to hourly...")
-    df_times = pd.Series([r[0] for r in records])
-    hour_keys = df_times.dt.floor('h')
-    unique_hours = hour_keys.unique()
+    df_times = pd.DatetimeIndex([r[0] for r in records])
+    hour_keys = df_times.floor('h')
+    unique_hours = sorted(set(hour_keys))
 
     hourly_precip = []
     hourly_times  = []
-    for hr in sorted(unique_hours):
-        idx = hour_keys[hour_keys == hr].index.tolist()
+    for hr in unique_hours:
+        idx = [i for i, h in enumerate(hour_keys) if h == hr]
         stacked = np.stack([records[i][1] for i in idx], axis=0)
         hourly_precip.append(stacked.mean(axis=0))   # mean of 30-min rates → hourly rate
         hourly_times.append(hr)
@@ -170,17 +195,25 @@ def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg'):
 
 
 if __name__ == "__main__":
-    # First time only — run this interactively to save credentials:
-    #   import earthaccess; earthaccess.login(strategy="interactive")
+    # Authenticate once — credentials saved to ~/.netrc, no prompts on subsequent runs
+    earthaccess.login(strategy="netrc")
 
-    # Uncomment the year you want:
-    # time_range = slice('2004-09-01', '2004-12-31')
-    # time_range = slice('2005-01-01', '2005-11-30')
-    # time_range = slice('2006-01-01', '2006-08-31')
-    # time_range = slice('2008-09-01', '2008-12-31')
-    # time_range = slice('2009-01-01', '2009-09-30')
-    # time_range = slice('2023-01-01', '2023-12-31')
-    # time_range = slice('2024-01-01', '2024-12-31')
-    time_range = slice('2025-01-01', '2025-12-31')
+    # All time ranges to download (matches your lightning data years)
+    TIME_RANGES = [
+        slice('2004-09-01', '2004-12-31'),
+        slice('2005-01-01', '2005-11-30'),
+        slice('2006-01-01', '2006-08-31'),
+        slice('2008-09-01', '2008-12-31'),
+        slice('2009-01-01', '2009-09-30'),
+        slice('2023-01-01', '2023-12-31'),
+        slice('2024-01-01', '2024-12-31'),
+        slice('2025-01-01', '2025-12-31'),
+    ]
+
+    for time_range in TIME_RANGES:
+        print(f"\n{'='*60}")
+        print(f"Processing {time_range.start} → {time_range.stop}")
+        print('='*60)
+        download_imerg(time_range=time_range)
 
     download_imerg(time_range=time_range)
