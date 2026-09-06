@@ -10,10 +10,11 @@ Builds flat tabular parquet files using Jones et al. (2025) CPLRSTW features:
   S — Wind Shear                ← jones_pressure_level_{year}.nc (500-1000 hPa)
   T — 2m Temperature (T2M)      ← jones_single_level_{year}.nc
   W — Warm Cloud Depth (WCD)    ← jones_single_level_{year}.nc
+  + vertical_velocity_500hPa   ← era5_pressure_level_{year}.nc (omega at 500 hPa, Pa/s)
 
 Output: data/jones_tabular_dataset_{year}.parquet
 Columns: time, lat, lon, cape, precipitation, land_sea_mask, rh_avg,
-         wind_shear, 2m_temperature, wcd, lightning_count
+         wind_shear, 2m_temperature, wcd, vertical_velocity_500hPa, lightning_count
 
 Usage:
     python build_jones_tabular_dataset.py
@@ -29,13 +30,14 @@ CHUNK_SIZE = 100   # timesteps per chunk
 
 # ── Feature column names in output parquet ─────────────────────────────────────
 JONES_FEATURES = [
-    'cape',            # C
-    'precipitation',   # P
-    'land_sea_mask',   # L
-    'rh_avg',          # R
-    'wind_shear',      # S
-    '2m_temperature',  # T
-    'wcd',             # W
+    'cape',                       # C
+    'precipitation',              # P
+    'land_sea_mask',              # L
+    'rh_avg',                     # R
+    'wind_shear',                 # S
+    '2m_temperature',             # T
+    'wcd',                        # W
+    'vertical_velocity_500hPa',   # omega at 500 hPa (Pa/s)
 ]
 
 
@@ -45,14 +47,24 @@ def build_jones_tabular_dataset(
     jones_pressure_path,   # jones_pressure_level_{year}.nc (wind_shear, rh_avg)
     imerg_path,            # imerg_hourly_{year}.nc (precipitation)
     lightning_path,        # ildn/lpats_on_era5_grid_{year}.nc
+    era5_pressure_path=None,  # era5_pressure_level_{year}.nc (for vertical_velocity)
     out_dir='data',
 ):
     print(f"\nLoading datasets...")
-    ds_era5   = xr.open_dataset(era5_single_path,   chunks={'time': CHUNK_SIZE})
-    ds_jones_s = xr.open_dataset(jones_single_path,  chunks={'time': CHUNK_SIZE})
+    ds_era5    = xr.open_dataset(era5_single_path,    chunks={'time': CHUNK_SIZE})
+    ds_jones_s = xr.open_dataset(jones_single_path,   chunks={'time': CHUNK_SIZE})
     ds_jones_p = xr.open_dataset(jones_pressure_path, chunks={'time': CHUNK_SIZE})
-    ds_imerg  = xr.open_dataset(imerg_path,          chunks={'time': CHUNK_SIZE})
-    ds_light  = xr.open_dataset(lightning_path,      chunks={'time': CHUNK_SIZE})
+    ds_imerg   = xr.open_dataset(imerg_path,          chunks={'time': CHUNK_SIZE})
+    ds_light   = xr.open_dataset(lightning_path,      chunks={'time': CHUNK_SIZE})
+
+    # Optional: vertical velocity at 500 hPa from original ERA5 pressure-level file
+    ds_era5_p = None
+    if era5_pressure_path and os.path.exists(era5_pressure_path):
+        ds_era5_p = xr.open_dataset(era5_pressure_path, chunks={'time': CHUNK_SIZE})
+        level_dim = 'level' if 'level' in ds_era5_p.dims else 'pressure_level'
+        print(f"  Loaded vertical_velocity from {era5_pressure_path}")
+    else:
+        print("  WARNING: era5_pressure_path not provided or missing — vertical_velocity_500hPa will be NaN")
 
     # ── Align all datasets to common time axis (intersection) ─────────────────
     # IMERG and ERA5 may have slightly different time coverage
@@ -115,6 +127,13 @@ def build_jones_tabular_dataset(
         chunk['rh_avg']     = jp['rh_avg'].values.ravel()
         chunk['wind_shear'] = jp['wind_shear'].values.ravel()
 
+        # vertical_velocity at 500 hPa (Pa/s) — from original ERA5 pressure-level file
+        if ds_era5_p is not None:
+            vv = ds_era5_p['vertical_velocity'].sel({level_dim: 500}).isel(time=sl).compute()
+            chunk['vertical_velocity_500hPa'] = vv.values.ravel().astype('float32')
+        else:
+            chunk['vertical_velocity_500hPa'] = float('nan')
+
         # Target — lightning count
         chunk['lightning_count'] = (
             ds_light['lightning_count'].isel(time=sl).compute().values.ravel()
@@ -149,6 +168,7 @@ if __name__ == "__main__":
             jones_pressure_path= f'data/jones_pressure_level_{year}.nc',
             imerg_path         = f'data/imerg_hourly_{year}.nc',
             lightning_path     = f'data/lpats_on_era5_grid_{year}.nc',
+            era5_pressure_path = f'data/era5_pressure_level_{year}.nc',
         )
 
     for year in ILDN_YEARS:
@@ -158,4 +178,5 @@ if __name__ == "__main__":
             jones_pressure_path= f'data/jones_pressure_level_{year}.nc',
             imerg_path         = f'data/imerg_hourly_{year}.nc',
             lightning_path     = f'data/ildn_on_era5_grid_{year}.nc',
+            era5_pressure_path = f'data/era5_pressure_level_{year}.nc',
         )
