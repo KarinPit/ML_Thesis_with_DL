@@ -499,26 +499,11 @@ def compute_fss(pred, target, threshold=0.0, window=3):
         return 1.0 - mse_frac / ref
 
 
-def compute_fss_adaptive(pred, target, window=3):
-    """
-    FSS at the threshold that gives the same predicted positive fraction as true labels.
-    This removes pos_weight threshold-shift bias and is comparable across experiments.
-    """
-    import torch.nn.functional as F
-    with torch.no_grad():
-        pos_rate = target.mean().item()
-        if pos_rate <= 0 or pos_rate >= 1:
-            return 0.0
-        threshold = torch.quantile(pred.reshape(-1), 1.0 - pos_rate).item()
-        return compute_fss(pred, target, threshold=threshold, window=window)
-
-
 def evaluate(model, loader, criterion, device):
     model.eval()
-    total_loss     = 0.0
-    total_fss      = 0.0
-    total_fss_adap = 0.0
-    n_batches      = 0
+    total_loss = 0.0
+    total_fss  = 0.0
+    n_batches  = 0
     with torch.no_grad():
         for X, y in loader:
             X, y = X.to(device), y.to(device)
@@ -526,13 +511,11 @@ def evaluate(model, loader, criterion, device):
             if pred.shape != y.shape:
                 y = y[:, :, :pred.shape[2], :pred.shape[3]]
             loss = criterion(pred, y)
-            total_loss     += loss.item() * X.size(0)
-            total_fss      += compute_fss(pred, y, threshold=0.0)
-            total_fss_adap += compute_fss_adaptive(pred, y)
-            n_batches      += 1
-    mean_fss      = total_fss      / n_batches if n_batches > 0 else 0.0
-    mean_fss_adap = total_fss_adap / n_batches if n_batches > 0 else 0.0
-    return total_loss / len(loader.dataset), mean_fss, mean_fss_adap
+            total_loss += loss.item() * X.size(0)
+            total_fss  += compute_fss(pred, y, threshold=0.0)
+            n_batches  += 1
+    mean_fss = total_fss / n_batches if n_batches > 0 else 0.0
+    return total_loss / len(loader.dataset), mean_fss
 
 
 # ── Padding helper ────────────────────────────────────────────────────────────
@@ -633,22 +616,21 @@ if __name__ == '__main__':
     print(f"Training on {len(train_ds):,} timesteps, testing on {len(test_ds):,}")
 
     # Training loop
-    train_losses, test_losses, fss_scores, fss_adap_scores = [], [], [], []
+    train_losses, test_losses, fss_scores = [], [], []
     best_test_loss = float('inf')
 
     for epoch in range(1, EPOCHS + 1):
-        train_loss            = train(model, train_loader, optimizer, criterion, DEVICE)
-        test_loss, mean_fss, mean_fss_adap = evaluate(model, test_loader, criterion, DEVICE)
+        train_loss       = train(model, train_loader, optimizer, criterion, DEVICE)
+        test_loss, mean_fss = evaluate(model, test_loader, criterion, DEVICE)
         scheduler.step(test_loss)
 
         train_losses.append(train_loss)
         test_losses.append(test_loss)
         fss_scores.append(mean_fss)
-        fss_adap_scores.append(mean_fss_adap)
 
         print(f"Epoch {epoch:3d}/{EPOCHS}  "
               f"train_loss={train_loss:.6f}  test_loss={test_loss:.6f}  "
-              f"FSS={mean_fss:.4f}  FSS_adap={mean_fss_adap:.4f}")
+              f"FSS={mean_fss:.4f}")
 
         # Save best model
         if test_loss < best_test_loss:
@@ -676,7 +658,6 @@ if __name__ == '__main__':
     plt.savefig(os.path.join(OUT_DIR, 'loss_curve.png'), dpi=150)
     plt.close()
 
-    print(f"\nBest test loss:     {best_test_loss:.6f}")
-    print(f"Best FSS (thr=0):   {max(fss_scores):.4f}")
-    print(f"Best FSS (adaptive):{max(fss_adap_scores):.4f}")
+    print(f"\nBest test loss:   {best_test_loss:.6f}")
+    print(f"Best FSS (thr=0): {max(fss_scores):.4f}")
     print(f"Outputs saved to {OUT_DIR}/")
