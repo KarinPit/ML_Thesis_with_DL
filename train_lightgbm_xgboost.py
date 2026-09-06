@@ -282,9 +282,9 @@ def train_lightgbm_and_xgboost(train_parquet_path, test_parquet_path, out_dir='d
 
 
 if __name__ == "__main__":
-    LAGS  = [0, 1, 3, 6, 12, 24, 48]
-    CONVECTIVE_MASK = True            # must match build_tabular_dataset.py setting
-    BALANCED        = True            # True = use balanced/subsampled train set
+    LAGS  = [0]
+    CONVECTIVE_MASK = False            # must match build_tabular_dataset.py setting
+    BALANCED        = False           # True = use balanced/subsampled train set
     RATIO           = 1               # 1 = 50/50, 50 = 50:1; must match balance_dataset.py
 
     mask_str = "_convmask" if CONVECTIVE_MASK else ""
@@ -301,7 +301,7 @@ if __name__ == "__main__":
         print(f"# LAG = {LAG}h")
         print(f"{'#'*60}")
         train_lightgbm_and_xgboost(
-            train_parquet_path=f'data/tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}{mask_str}{balance_str}.parquet',
-            test_parquet_path=f'data/tabular_dataset_2025{lag_str}{mask_str}{balance_str}.parquet',  # test is always unbalanced
+            train_parquet_path=f'data/jones_tabular_dataset_2004_2005_2006_2008_2009_2023_2024{lag_str}{mask_str}{balance_str}.parquet',
+            test_parquet_path=f'data/jones_tabular_dataset_2025{lag_str}{mask_str}{balance_str}.parquet',  # test is always unbalanced
             lag=LAG,
         )

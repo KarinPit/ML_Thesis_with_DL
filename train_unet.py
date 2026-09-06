@@ -2,28 +2,30 @@
 train_unet.py
 -------------
 Train a simplified U-Net (Jones et al. 2026 architecture) for lightning
-density prediction on ERA5 data.
+prediction on ERA5 + IMERG data using Jones et al. CPLRSTW features.
 
 Architecture (Table 2, Jones et al. 2026):
   - Input:      7 channels × spatial grid (H × W)
   - Encoder:    Block1: Conv3×3+ReLU → MaxPool2×2  (7 → 32 ch, H→H/2)
                 Block2: Conv3×3+ReLU → MaxPool2×2  (32 → 16 ch, H/2→H/4)
   - Bottleneck: Conv3×3+ReLU  (16 → 8 ch)
-  - Decoder:    Block1: TranspConv2×2 → Conv3×3+ReLU  (8 → 16 ch, H/4→H/2)
-                Block2: TranspConv2×2 → Conv3×3+ReLU  (16 → 32 ch, H/2→H)
-  - Output:     Conv1×1  (32 → 1 ch) — lightning density map
+  - Decoder:    Block1: TranspConv2×2 → ReLU → Conv3×3+ReLU  (8 → 16 ch, H/4→H/2)
+                Block2: TranspConv2×2 → ReLU → Conv3×3+ReLU  (16 → 32 ch, H/2→H)
+  - Output:     Conv1×1  (32 → 1 ch) — raw z-scored lightning density
   - No skip connections (intentional, as per Jones et al.)
-  - Loss:       MSE
-  - Norm:       z-score on both inputs and output
+  - Loss:       MSE on z-scored lightning density (matching Jones et al.)
+  - Norm:       z-score on both inputs and target
 
-Input channels (top-7 by feature importance from LightGBM):
-  1. specific_cloud_ice_water_content_600hPa
-  2. specific_cloud_ice_water_content_550hPa
-  3. specific_cloud_ice_water_content_650hPa
-  4. total_totals_index
-  5. specific_cloud_ice_water_content_500hPa
-  6. specific_cloud_liquid_water_content_700hPa
-  7. convective_available_potential_energy
+Input channels (Jones et al. CPLRSTW — 7 variables):
+  C 1. cape                ← ERA5 single-level (original download)
+  P 2. precipitation       ← NASA GPM IMERG V07 hourly
+  L 3. land_sea_mask       ← ERA5 single-level
+  R 4. rh_avg              ← derived from q+T at 500 & 1000 hPa (avg)
+  S 5. wind_shear          ← sqrt((u500−u1000)²+(v500−v1000)²)
+  T 6. 2m_temperature      ← ERA5 single-level
+  W 7. wcd                 ← Zero Degree Level − Cloud Base Height
+
+Data: jones_tabular_dataset_{year}.parquet (from build_jones_tabular_dataset.py)
 
 Usage:
     python train_unet.py
@@ -42,20 +44,55 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+# FEATURE_COLS = [
+#     # Jones et al. CPLRSTW (7) — from combined_tabular_dataset_{year}.parquet
+#     'cape',            # C — convective available potential energy
+#     'precipitation',   # P — IMERG hourly precipitation
+#     'land_sea_mask',   # L
+#     'rh_avg',          # R — mean relative humidity (500 & 1000 hPa)
+#     'wind_shear',      # S — deep-layer wind shear (500–1000 hPa)
+#     '2m_temperature',  # T
+#     'wcd',             # W — warm cloud depth (ZDL − CBH)
+#     # Exp 7b top-6 microphysical features (excl. cape = already above)
+#     'specific_cloud_ice_water_content_600hPa',   # rank 1 (gain 0.531)
+#     'specific_cloud_ice_water_content_550hPa',   # rank 2 (gain 0.150)
+#     'specific_cloud_ice_water_content_650hPa',   # rank 3 (gain 0.039)
+#     'total_totals_index',                         # rank 4 (gain 0.026)
+#     'specific_cloud_ice_water_content_500hPa',   # rank 5 (gain 0.023)
+#     'specific_cloud_liquid_water_content_700hPa', # rank 6 (gain 0.022)
+# ]
+
 FEATURE_COLS = [
-    'specific_cloud_ice_water_content_600hPa',
-    'specific_cloud_ice_water_content_550hPa',
-    'specific_cloud_ice_water_content_650hPa',
-    'total_totals_index',
-    'specific_cloud_ice_water_content_500hPa',
-    'specific_cloud_liquid_water_content_700hPa',
-    'convective_available_potential_energy',
+    # Exp 7b feature set — top-7 LightGBM features (Exp 3), gave FSS 0.613
+    'specific_cloud_ice_water_content_600hPa',    # rank 1 (gain 0.531)
+    'specific_cloud_ice_water_content_550hPa',    # rank 2 (gain 0.150)
+    'specific_cloud_ice_water_content_650hPa',    # rank 3 (gain 0.039)
+    'total_totals_index',                          # rank 4 (gain 0.026)
+    'specific_cloud_ice_water_content_500hPa',    # rank 5 (gain 0.023)
+    'specific_cloud_liquid_water_content_700hPa', # rank 6 (gain 0.022)
+    'convective_available_potential_energy',       # rank 7 (gain 0.018)
 ]
+
+# No aux parquets needed — CIWC already baked into jones_ciwc_tabular_dataset files
+AUX_TRAIN_PARQUETS = None
+AUX_TEST_PARQUET   = None
+AUX_COLS           = None
 
 # ERA5 spatial grid over Israel/E. Med domain (lat/lon from ds_single)
 # Will be inferred from data at runtime — set to None to auto-detect
 GRID_H = None
 GRID_W = None
+
+# TRAIN_PARQUETS = [
+#     'data/combined_tabular_dataset_2004.parquet',
+#     'data/combined_tabular_dataset_2005.parquet',
+#     'data/combined_tabular_dataset_2006.parquet',
+#     'data/combined_tabular_dataset_2008.parquet',
+#     'data/combined_tabular_dataset_2009.parquet',
+#     'data/combined_tabular_dataset_2023.parquet',
+#     'data/combined_tabular_dataset_2024.parquet',
+# ]
+# TEST_PARQUET = 'data/combined_tabular_dataset_2025.parquet'
 
 TRAIN_PARQUETS = [
     'data/tabular_dataset_2004.parquet',
@@ -70,9 +107,38 @@ TEST_PARQUET = 'data/tabular_dataset_2025.parquet'
 
 BATCH_SIZE  = 32
 EPOCHS      = 50
-LR          = 1e-3
-OUT_DIR     = 'results/unet'
+LR          = 1e-3   # Exp 7b LR (training from scratch)
+OUT_DIR     = 'results/unet_7bFeatures'
 DEVICE      = 'cuda' if torch.cuda.is_available() else 'cpu'
+AGG_HOURS   = 1      # hourly — matches Exp 7b which gave FSS 0.613
+BINARY_TARGET = True  # True = BCE binary classification; False = MSE z-scored density
+# Unweighted BCE — same as Exp 7b (FSS 0.613)
+# Set to a value (e.g. 40) to weight false negatives more strongly
+BCE_POS_WEIGHT = None
+
+# ── Transfer learning ─────────────────────────────────────────────────────────
+PRETRAINED_WEIGHTS = None  # train from scratch — 13-ch input differs from Jones 7-ch
+FREEZE_ENCODER     = False
+
+# Key mapping: Jones .pth → our model attribute names
+JONES_KEY_MAP = {
+    'encoder0.0.0.weight': 'enc1.block.0.weight',
+    'encoder0.0.0.bias':   'enc1.block.0.bias',
+    'encoder1.0.0.weight': 'enc2.block.0.weight',
+    'encoder1.0.0.bias':   'enc2.block.0.bias',
+    'center.0.weight':     'bottleneck.block.0.weight',
+    'center.0.bias':       'bottleneck.block.0.bias',
+    'decoder1.0.weight':   'up1.0.weight',
+    'decoder1.0.bias':     'up1.0.bias',
+    'decoder1.2.weight':   'dec1.block.0.weight',
+    'decoder1.2.bias':     'dec1.block.0.bias',
+    'decoder0.0.weight':   'up2.0.weight',
+    'decoder0.0.bias':     'up2.0.bias',
+    'decoder0.2.weight':   'dec2.block.0.weight',
+    'decoder0.2.bias':     'dec2.block.0.bias',
+    'outputs.0.weight':    'out.weight',
+    'outputs.0.bias':      'out.bias',
+}
 
 # ── U-Net Architecture ────────────────────────────────────────────────────────
 
@@ -107,18 +173,15 @@ class LightningUNet(nn.Module):
         # Bottleneck
         self.bottleneck = ConvBlock(16, 8)
 
-        # Decoder
-        self.up1    = nn.ConvTranspose2d(8, 16, kernel_size=2, stride=2)
+        # Decoder — Jones uses TranspConv+ReLU → Conv+ReLU per block
+        self.up1    = nn.Sequential(nn.ConvTranspose2d(8, 16, kernel_size=2, stride=2), nn.ReLU(inplace=True))
         self.dec1   = ConvBlock(16, 16)
 
-        self.up2    = nn.ConvTranspose2d(16, 32, kernel_size=2, stride=2)
+        self.up2    = nn.Sequential(nn.ConvTranspose2d(16, 32, kernel_size=2, stride=2), nn.ReLU(inplace=True))
         self.dec2   = ConvBlock(32, 32)
 
-        # Output — sigmoid for binary classification
-        self.out = nn.Sequential(
-            nn.Conv2d(32, 1, kernel_size=1),
-            nn.Sigmoid()
-        )
+        # Output — raw logits (no activation), MSE on z-scored density (Jones et al.)
+        self.out = nn.Conv2d(32, 1, kernel_size=1)
 
     def forward(self, x):
         # Encoder
@@ -145,78 +208,146 @@ class LightningUNet(nn.Module):
 
 class LightningGridDataset(Dataset):
     """
-    Reads ERA5 tabular parquet(s), reshapes each timestep into a spatial
-    grid (H × W), and returns (input_tensor [7, H, W], target_tensor [1, H, W]).
+    Reads ERA5 tabular parquet(s), aggregates to 12-hourly windows (Jones et al.),
+    reshapes each window into a spatial grid (H × W), and returns
+    (input_tensor [7, H, W], target_tensor [1, H, W]).
 
-    Applies z-score normalization using precomputed stats.
+    Aggregation strategy (matching Jones et al.):
+      - ERA5 features:   snapshot at the first hour of each 12-hour window (00Z / 12Z)
+      - Precipitation:   mean rate over the 12-hour window
+      - Lightning:       sum of counts over the 12-hour window
     """
     def __init__(self, parquet_paths, feature_cols, grid_h, grid_w,
-                 feat_mean=None, feat_std=None, tgt_mean=None, tgt_std=None):
+                 feat_mean=None, feat_std=None, tgt_mean=None, tgt_std=None,
+                 agg_hours=12, binary_target=False,
+                 aux_parquet_paths=None, aux_cols=None):
         self.feature_cols = feature_cols
-        self.grid_h = grid_h
-        self.grid_w = grid_w
+        self.grid_h   = grid_h
+        self.grid_w   = grid_w
         self.feat_mean = feat_mean
         self.feat_std  = feat_std
         self.tgt_mean  = tgt_mean
         self.tgt_std   = tgt_std
+        self.agg_hours = agg_hours
+        self.binary_target = binary_target
+        self.precip_idx = feature_cols.index('precipitation') if 'precipitation' in feature_cols else None
 
-        # Load all parquets, keep only needed columns
-        cols = feature_cols + ['lightning_count', 'time']
+        # Jones feature cols (excluding any aux cols)
+        jones_cols = [c for c in feature_cols if c not in (aux_cols or [])]
+
+        # Load Jones parquets — include lat/lon only if we need to align aux features
+        need_latlon = bool(aux_parquet_paths and aux_cols)
+        sort_keys   = ['time', 'lat', 'lon'] if need_latlon else ['time']
+        load_cols   = jones_cols + ['lightning_count', 'time'] + (['lat', 'lon'] if need_latlon else [])
+
         dfs = []
         for path in parquet_paths:
             if not os.path.exists(path):
                 print(f"  WARNING: missing {path}, skipping")
                 continue
-            dfs.append(pd.read_parquet(path, columns=cols))
-        self.df = pd.concat(dfs, ignore_index=True)
+            dfs.append(pd.read_parquet(path, columns=load_cols))
+        self.df = pd.concat(dfs, ignore_index=True).sort_values(sort_keys).reset_index(drop=True)
 
-        # Sort once, build (start, end) index per timestep — O(1) lookup, no extra RAM
+        # Align and attach auxiliary features via column-concat (no merge — avoids OOM)
+        # Both parquets share the same (time, lat, lon) grid; sorting aligns rows exactly.
+        if aux_parquet_paths and aux_cols:
+            aux_dfs = []
+            for path in aux_parquet_paths:
+                if not os.path.exists(path):
+                    print(f"  WARNING: missing aux {path}, skipping")
+                    continue
+                aux_dfs.append(pd.read_parquet(path, columns=aux_cols + ['time', 'lat', 'lon']))
+            if aux_dfs:
+                aux_df = pd.concat(aux_dfs, ignore_index=True).sort_values(sort_keys).reset_index(drop=True)
+                self.df = pd.concat([self.df.drop(columns=['lat', 'lon']), aux_df[aux_cols]], axis=1)
+                print(f"  Attached {aux_cols} from {len(aux_dfs)} aux parquet(s) via column-concat")
+
+        # Sort and build per-hour index
         self.df = self.df.sort_values('time').reset_index(drop=True)
         time_arr   = self.df['time'].values
         boundaries = np.where(time_arr[:-1] != time_arr[1:])[0] + 1
         starts     = np.concatenate([[0], boundaries])
         ends       = np.concatenate([boundaries, [len(self.df)]])
-        self.times = np.sort(time_arr[starts])
-        self.time_slices = {t: (int(s), int(e)) for t, s, e in zip(self.times, starts, ends)}
-        print(f"  Dataset: {len(self.times):,} timesteps × {grid_h}×{grid_w} grid")
+        all_times  = np.sort(time_arr[starts])
+        self.time_slices = {t: (int(s), int(e)) for t, s, e in zip(all_times, starts, ends)}
+
+        # Group individual hours into agg_hours-hour windows aligned to 00Z
+        times_pd    = pd.DatetimeIndex([pd.Timestamp(t) for t in all_times])
+        win_labels  = times_pd.floor(f'{agg_hours}h')
+        from collections import defaultdict
+        win_dict = defaultdict(list)
+        for t, wl in zip(all_times, win_labels):
+            win_dict[wl.to_datetime64()].append(t)
+
+        self.windows         = np.array(sorted(win_dict.keys()))
+        self.window_to_times = {w: sorted(ts) for w, ts in win_dict.items()}
+        print(f"  Dataset: {len(self.windows):,} {agg_hours}-hour windows × {grid_h}×{grid_w} grid")
 
     def __len__(self):
-        return len(self.times)
+        return len(self.windows)
 
     def __getitem__(self, idx):
-        t = self.times[idx]
-        s, e = self.time_slices[t]
-        snap = self.df.iloc[s:e]
+        window_start = self.windows[idx]
+        hour_times   = self.window_to_times[window_start]
+        H, W, C      = self.grid_h, self.grid_w, len(self.feature_cols)
 
-        # Features: (H*W, 7) → (7, H, W)
-        X = snap[self.feature_cols].values.reshape(
-            self.grid_h, self.grid_w, len(self.feature_cols)
-        )
-        X = X.transpose(2, 0, 1).astype(np.float32)   # (7, H, W)
+        # Load all hourly grids in this window
+        feat_stack = []
+        light_sum  = np.zeros((H, W), dtype=np.float32)
+        for i, t in enumerate(hour_times):
+            s, e = self.time_slices[t]
+            snap = self.df.iloc[s:e]
 
-        # Target: binary presence/absence (H*W,) → (1, H, W)
-        y = (snap['lightning_count'].values > 0).reshape(
-            self.grid_h, self.grid_w
-        ).astype(np.float32)[np.newaxis]               # (1, H, W)
+            f = snap[self.feature_cols].values.reshape(H, W, C).transpose(2, 0, 1).astype(np.float32)
+            f = np.nan_to_num(f, nan=0.0, posinf=0.0, neginf=0.0)
+            feat_stack.append(f)
 
-        # z-score normalization on features only (target is binary)
+            light_sum += snap['lightning_count'].values.reshape(H, W).astype(np.float32)
+
+        feat_stack = np.stack(feat_stack, axis=0)   # (n_hours, C, H, W)
+
+        # ERA5 features: snapshot at first hour of window
+        X = feat_stack[0].copy()                    # (C, H, W)
+
+        # Precipitation: mean rate over all hours in window
+        if self.precip_idx is not None:
+            X[self.precip_idx] = feat_stack[:, self.precip_idx, :, :].mean(axis=0)
+
+        # Target: binary (any lightning in window) or z-scored density
+        if self.binary_target:
+            y = (light_sum > 0).astype(np.float32)[np.newaxis]   # (1, H, W) binary
+        else:
+            y = light_sum[np.newaxis]                             # (1, H, W) counts
+
+        # z-score normalization on features (always); target only for MSE mode
         if self.feat_mean is not None:
             X = (X - self.feat_mean[:, None, None]) / (self.feat_std[:, None, None] + 1e-8)
+        if self.tgt_mean is not None and not self.binary_target:
+            y = (y - self.tgt_mean) / (self.tgt_std + 1e-8)
 
         return torch.from_numpy(X), torch.from_numpy(y)
 
 
 # ── Normalization stats ───────────────────────────────────────────────────────
 
-def compute_norm_stats(parquet_paths, feature_cols, sample_rows=500_000):
-    """Compute mean/std over a sample of the training data."""
+def compute_norm_stats(parquet_paths, feature_cols, agg_hours=12, sample_rows=500_000,
+                       aux_parquet_paths=None, aux_cols=None):
+    """
+    Compute feature mean/std from hourly data (ERA5 snapshot values).
+    Compute target mean/std from 12-hourly SUMMED lightning (matching Jones et al.).
+    Optionally merges aux_cols from aux_parquet_paths before computing stats.
+    """
     print("Computing normalization statistics...")
+    jones_cols = [c for c in feature_cols if c not in (aux_cols or [])]
+    need_latlon = bool(aux_parquet_paths and aux_cols)
+    load_cols   = jones_cols + ['lightning_count', 'time'] + (['lat', 'lon'] if need_latlon else [])
+
     dfs = []
     rows_left = sample_rows
     for path in parquet_paths:
         if not os.path.exists(path):
             continue
-        df = pd.read_parquet(path, columns=feature_cols + ['lightning_count'])
+        df = pd.read_parquet(path, columns=load_cols)
         df = df.sample(min(len(df), rows_left // len(parquet_paths)), random_state=42)
         dfs.append(df)
         rows_left -= len(df)
@@ -224,13 +355,37 @@ def compute_norm_stats(parquet_paths, feature_cols, sample_rows=500_000):
             break
     df_sample = pd.concat(dfs, ignore_index=True)
 
+    if aux_parquet_paths and aux_cols:
+        # Sample the same row indices from aux parquets, align by sort, column-concat
+        sort_keys = ['time', 'lat', 'lon']
+        df_sample = df_sample.sort_values(sort_keys).reset_index(drop=True)
+        aux_dfs = []
+        for path in aux_parquet_paths:
+            if not os.path.exists(path):
+                continue
+            # Sample same fraction as main (approximation — stats only need rough values)
+            adf = pd.read_parquet(path, columns=aux_cols + sort_keys)
+            adf = adf.sample(min(len(adf), sample_rows // len(parquet_paths)), random_state=42)
+            aux_dfs.append(adf)
+        if aux_dfs:
+            aux_df = pd.concat(aux_dfs, ignore_index=True).sort_values(sort_keys).reset_index(drop=True)
+            # Trim to same length in case of minor count mismatch from sampling
+            n = min(len(df_sample), len(aux_df))
+            df_sample = pd.concat([df_sample.iloc[:n].drop(columns=['lat', 'lon']),
+                                    aux_df.iloc[:n][aux_cols]], axis=1)
+
     feat_mean = df_sample[feature_cols].mean().values.astype(np.float32)
     feat_std  = df_sample[feature_cols].std().values.astype(np.float32)
-    tgt_mean  = float(df_sample['lightning_count'].mean())
-    tgt_std   = float(df_sample['lightning_count'].std())
+
+    # Target stats from aggregated lightning (sum over agg_hours-hour windows)
+    df_sample['time'] = pd.to_datetime(df_sample['time'])
+    df_sample['window'] = df_sample['time'].dt.floor(f'{agg_hours}h')
+    agg_lightning = df_sample.groupby('window')['lightning_count'].sum()
+    tgt_mean = float(agg_lightning.mean())
+    tgt_std  = float(agg_lightning.std())
 
     print(f"  Feature means: {feat_mean}")
-    print(f"  Target mean/std: {tgt_mean:.4f} / {tgt_std:.4f}")
+    print(f"  Target mean/std (12-hr aggregated): {tgt_mean:.4f} / {tgt_std:.4f}")
     return feat_mean, feat_std, tgt_mean, tgt_std
 
 
@@ -266,6 +421,55 @@ def train(model, loader, optimizer, criterion, device):
     return total_loss / len(loader.dataset)
 
 
+def load_jones_weights(model, path, key_map):
+    """
+    Load Jones et al. pre-trained weights into our model using a key remapping.
+    Encoder weights transfer directly (same 7-channel CPLRSTW input).
+    Decoder weights provide a warm start but will be fine-tuned.
+    """
+    jones_state = torch.load(path, map_location='cpu')
+    our_state   = model.state_dict()
+
+    loaded, skipped = [], []
+    for jones_key, our_key in key_map.items():
+        if jones_key not in jones_state or our_key not in our_state:
+            skipped.append((our_key, 'missing in jones', 'n/a'))
+            continue
+
+        j_w = jones_state[jones_key]
+        o_w = our_state[our_key]
+
+        if j_w.shape == o_w.shape:
+            # Exact match — copy directly
+            our_state[our_key] = j_w
+            loaded.append(our_key)
+        elif j_w.ndim == 4 and j_w.shape[1] < o_w.shape[1]:
+            # Input-channel mismatch (e.g. enc1 conv: Jones 7-ch, ours 10-ch).
+            # Copy Jones weights for the first N channels; leave extra channels
+            # at their current random init so the model can learn from new features.
+            n = j_w.shape[1]
+            our_state[our_key][:, :n, :, :] = j_w
+            loaded.append(f"{our_key} (partial {n}/{o_w.shape[1]} in-channels)")
+        else:
+            skipped.append((our_key, j_w.shape, o_w.shape))
+
+    model.load_state_dict(our_state)
+    print(f"Loaded {len(loaded)}/{len(key_map)} weight tensors from {path}")
+    if skipped:
+        print(f"  Skipped (shape mismatch or missing): {skipped}")
+    return model
+
+
+def freeze_encoder(model):
+    """Freeze encoder layers so only decoder is trained."""
+    for module in [model.enc1, model.enc2, model.bottleneck]:
+        for param in module.parameters():
+            param.requires_grad = False
+    frozen   = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Encoder frozen: {frozen:,} frozen params, {trainable:,} trainable params")
+
+
 def compute_fss(pred, target, threshold=0.0, window=3):
     """
     Fractions Skill Score (Roberts & Lean, 2008) with a square neighbourhood.
@@ -295,11 +499,26 @@ def compute_fss(pred, target, threshold=0.0, window=3):
         return 1.0 - mse_frac / ref
 
 
+def compute_fss_adaptive(pred, target, window=3):
+    """
+    FSS at the threshold that gives the same predicted positive fraction as true labels.
+    This removes pos_weight threshold-shift bias and is comparable across experiments.
+    """
+    import torch.nn.functional as F
+    with torch.no_grad():
+        pos_rate = target.mean().item()
+        if pos_rate <= 0 or pos_rate >= 1:
+            return 0.0
+        threshold = torch.quantile(pred.reshape(-1), 1.0 - pos_rate).item()
+        return compute_fss(pred, target, threshold=threshold, window=window)
+
+
 def evaluate(model, loader, criterion, device):
     model.eval()
-    total_loss = 0.0
-    total_fss  = 0.0
-    n_batches  = 0
+    total_loss     = 0.0
+    total_fss      = 0.0
+    total_fss_adap = 0.0
+    n_batches      = 0
     with torch.no_grad():
         for X, y in loader:
             X, y = X.to(device), y.to(device)
@@ -307,11 +526,13 @@ def evaluate(model, loader, criterion, device):
             if pred.shape != y.shape:
                 y = y[:, :, :pred.shape[2], :pred.shape[3]]
             loss = criterion(pred, y)
-            total_loss += loss.item() * X.size(0)
-            total_fss  += compute_fss(pred, y, threshold=0.5)
-            n_batches  += 1
-    mean_fss = total_fss / n_batches if n_batches > 0 else 0.0
-    return total_loss / len(loader.dataset), mean_fss
+            total_loss     += loss.item() * X.size(0)
+            total_fss      += compute_fss(pred, y, threshold=0.0)
+            total_fss_adap += compute_fss_adaptive(pred, y)
+            n_batches      += 1
+    mean_fss      = total_fss      / n_batches if n_batches > 0 else 0.0
+    mean_fss_adap = total_fss_adap / n_batches if n_batches > 0 else 0.0
+    return total_loss / len(loader.dataset), mean_fss, mean_fss_adap
 
 
 # ── Padding helper ────────────────────────────────────────────────────────────
@@ -345,9 +566,10 @@ if __name__ == '__main__':
     grid_w_pad = grid_w + pad_w
     print(f"Padded grid: {grid_h_pad} × {grid_w_pad}")
 
-    # Normalization stats from training data
+    # Normalization stats from training data (target stats use 12-hr aggregated lightning)
     feat_mean, feat_std, tgt_mean, tgt_std = compute_norm_stats(
-        TRAIN_PARQUETS, FEATURE_COLS
+        TRAIN_PARQUETS, FEATURE_COLS, agg_hours=AGG_HOURS,
+        aux_parquet_paths=AUX_TRAIN_PARQUETS, aux_cols=AUX_COLS,
     )
     stats = {
         'feat_mean': feat_mean.tolist(),
@@ -364,42 +586,69 @@ if __name__ == '__main__':
     # Datasets
     train_ds = LightningGridDataset(
         TRAIN_PARQUETS, FEATURE_COLS, grid_h, grid_w,
-        feat_mean, feat_std, tgt_mean, tgt_std,
+        feat_mean, feat_std, tgt_mean, tgt_std, agg_hours=AGG_HOURS,
+        binary_target=BINARY_TARGET,
+        aux_parquet_paths=AUX_TRAIN_PARQUETS, aux_cols=AUX_COLS,
     )
     test_ds = LightningGridDataset(
         [TEST_PARQUET], FEATURE_COLS, grid_h, grid_w,
-        feat_mean, feat_std, tgt_mean, tgt_std,
+        feat_mean, feat_std, tgt_mean, tgt_std, agg_hours=AGG_HOURS,
+        binary_target=BINARY_TARGET,
+        aux_parquet_paths=[AUX_TEST_PARQUET], aux_cols=AUX_COLS,
     )
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=4)
     test_loader  = DataLoader(test_ds,  batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
     # Model
-    model     = LightningUNet(in_channels=len(FEATURE_COLS)).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    criterion = nn.BCELoss()
+    model = LightningUNet(in_channels=len(FEATURE_COLS)).to(DEVICE)
+
+    # Transfer learning: load Jones pre-trained weights, freeze encoder
+    if PRETRAINED_WEIGHTS and os.path.exists(PRETRAINED_WEIGHTS):
+        print(f"\nLoading Jones pre-trained weights from {PRETRAINED_WEIGHTS}...")
+        load_jones_weights(model, PRETRAINED_WEIGHTS, JONES_KEY_MAP)
+        if FREEZE_ENCODER:
+            freeze_encoder(model)
+    else:
+        print("\nNo pretrained weights found — training from scratch.")
+
+    # Only pass trainable parameters to the optimizer
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()), lr=LR
+    )
+    if BINARY_TARGET:
+        if BCE_POS_WEIGHT is not None:
+            pw = torch.tensor([BCE_POS_WEIGHT], device=DEVICE)
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pw)
+            print(f"BCE pos_weight={BCE_POS_WEIGHT} (penalises false positives)")
+        else:
+            criterion = nn.BCEWithLogitsLoss()
+    else:
+        criterion = nn.MSELoss()
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=5, factor=0.5
     )
 
-    print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"\nTotal model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Training on {len(train_ds):,} timesteps, testing on {len(test_ds):,}")
 
     # Training loop
-    train_losses, test_losses, fss_scores = [], [], []
+    train_losses, test_losses, fss_scores, fss_adap_scores = [], [], [], []
     best_test_loss = float('inf')
 
     for epoch in range(1, EPOCHS + 1):
         train_loss            = train(model, train_loader, optimizer, criterion, DEVICE)
-        test_loss, mean_fss   = evaluate(model, test_loader, criterion, DEVICE)
+        test_loss, mean_fss, mean_fss_adap = evaluate(model, test_loader, criterion, DEVICE)
         scheduler.step(test_loss)
 
         train_losses.append(train_loss)
         test_losses.append(test_loss)
         fss_scores.append(mean_fss)
+        fss_adap_scores.append(mean_fss_adap)
 
         print(f"Epoch {epoch:3d}/{EPOCHS}  "
-              f"train_loss={train_loss:.6f}  test_loss={test_loss:.6f}  FSS={mean_fss:.4f}")
+              f"train_loss={train_loss:.6f}  test_loss={test_loss:.6f}  "
+              f"FSS={mean_fss:.4f}  FSS_adap={mean_fss_adap:.4f}")
 
         # Save best model
         if test_loss < best_test_loss:
@@ -415,7 +664,7 @@ if __name__ == '__main__':
     ax1.plot(train_losses, label='Train MSE')
     ax1.plot(test_losses,  label='Test MSE')
     ax1.set_xlabel('Epoch'); ax1.set_ylabel('MSE Loss')
-    ax1.set_title('U-Net Training — Jones et al. (2026) Architecture')
+    ax1.set_title('U-Net Training — Jones CPLRSTW Features + Pretrained Weights (MSE)')
     ax1.legend(); ax1.grid(True, alpha=0.3)
 
     ax2.plot(fss_scores, color='green', label='FSS (3×3 window, threshold=0)')
@@ -427,6 +676,7 @@ if __name__ == '__main__':
     plt.savefig(os.path.join(OUT_DIR, 'loss_curve.png'), dpi=150)
     plt.close()
 
-    print(f"\nBest test loss: {best_test_loss:.6f}")
-    print(f"Best FSS:       {max(fss_scores):.4f}")
+    print(f"\nBest test loss:     {best_test_loss:.6f}")
+    print(f"Best FSS (thr=0):   {max(fss_scores):.4f}")
+    print(f"Best FSS (adaptive):{max(fss_adap_scores):.4f}")
     print(f"Outputs saved to {OUT_DIR}/")

@@ -23,9 +23,10 @@ TRAIN_YEARS = [
     2023, 2024,                     # ILDN
 ]
 
-LAGS  = [0, 1, 3, 6, 12, 24, 48]
-CONVECTIVE_MASK = True  # must match build_tabular_dataset.py setting
-BALANCED        = True  # True = balanced; False = raw unbalanced parquets
+LAGS  = [0]
+# LAGS  = [0, 1, 3, 6, 12, 24, 48]
+CONVECTIVE_MASK = False  # must match build_tabular_dataset.py setting
+BALANCED        = False  # True = balanced; False = raw unbalanced parquets
 RATIO           = 1    # no-lightning rows per lightning row (1 = 50/50, 50 = 50:1); only used when BALANCED=True
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,7 +48,7 @@ if __name__ == '__main__':
         missing = []
 
         for year in TRAIN_YEARS:
-            path = os.path.join(DATA_DIR, f'tabular_dataset_{year}{lag_str}{mask_str}{balance_str}.parquet')
+            path = os.path.join(DATA_DIR, f'jones_tabular_dataset_{year}{lag_str}{mask_str}{balance_str}.parquet')
             if not os.path.exists(path):
                 print(f"  ⚠  Missing: {path} — skipping year {year}")
                 missing.append(year)
@@ -62,7 +63,7 @@ if __name__ == '__main__':
 
         years_used = [y for y in TRAIN_YEARS if y not in missing]
         years_str  = '_'.join(str(y) for y in years_used)
-        out_path   = os.path.join(DATA_DIR, f'tabular_dataset_{years_str}{lag_str}{mask_str}{balance_str}.parquet')
+        out_path   = os.path.join(DATA_DIR, f'jones_tabular_dataset_{years_str}{lag_str}{mask_str}{balance_str}.parquet')
 
         df = pd.concat(parts).sort_values('time').reset_index(drop=True)
         print(f"\nCombined: {len(df):,} rows across years {years_used}")
