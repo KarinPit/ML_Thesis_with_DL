@@ -63,7 +63,7 @@ import matplotlib.pyplot as plt
 # ]
 
 FEATURE_COLS = [
-    # Exp 7b feature set — top-7 LightGBM features (Exp 3), gave FSS 0.613
+    # Exp 7b feature set — top-7 LightGBM features, gave FSS 0.613
     'specific_cloud_ice_water_content_600hPa',    # rank 1 (gain 0.531)
     'specific_cloud_ice_water_content_550hPa',    # rank 2 (gain 0.150)
     'specific_cloud_ice_water_content_650hPa',    # rank 3 (gain 0.039)
@@ -108,9 +108,10 @@ TEST_PARQUET = 'data/tabular_dataset_2025.parquet'
 BATCH_SIZE  = 32
 EPOCHS      = 50
 LR          = 1e-3   # Exp 7b LR (training from scratch)
-OUT_DIR     = 'results/unet_7bFeatures'
+OUT_DIR     = 'results/unet_exp7b_repro'
 DEVICE      = 'cuda' if torch.cuda.is_available() else 'cpu'
-AGG_HOURS   = 1      # hourly — matches Exp 7b which gave FSS 0.613
+AGG_HOURS   = 1      # 1 = every hour is one sample; 3/6/12 = aggregate N hours into one window
+SEED        = 42     # set to None to disable fixed seed
 BINARY_TARGET = True  # True = BCE binary classification; False = MSE z-scored density
 # Unweighted BCE — same as Exp 7b (FSS 0.613)
 # Set to a value (e.g. 40) to weight false negatives more strongly
@@ -534,7 +535,16 @@ def pad_to_divisible(tensor, divisor=4):
 
 if __name__ == '__main__':
     os.makedirs(OUT_DIR, exist_ok=True)
+
+    if SEED is not None:
+        torch.manual_seed(SEED)
+        np.random.seed(SEED)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(SEED)
+        print(f"Random seed: {SEED}")
+
     print(f"Device: {DEVICE}")
+    print(f"AGG_HOURS: {AGG_HOURS}")
 
     # Auto-detect grid size
     ref_parquet = next((p for p in TRAIN_PARQUETS if os.path.exists(p)), None)
