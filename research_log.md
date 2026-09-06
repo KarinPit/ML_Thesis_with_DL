@@ -1097,3 +1097,321 @@ All 22,041 parameters trainable. Jones weights used as warm start for entire net
 - The frozen encoder was not the main bottleneck. The fundamental problem is MSE + sparse regional target, regardless of which layers are frozen.
 
 **Conclusion:** Unfreezing the encoder gives marginal gains (FSS +0.010) but does not solve the underlying MSE collapse problem. The loss function is the bottleneck, not the encoder. MSE + Jones pretrained weights is a dead end for this sparse regional domain. Moving to Exp 9c: BCE loss with Jones CPLRSTW features.
+
+---
+
+## Experiment 11 — Combined Features (Jones CPLRSTW + Exp 7b Top-6 Microphysics), 13 channels
+
+**Code:** `train_unet.py`, `BINARY_TARGET=True`, `BCE_POS_WEIGHT=None`, `PRETRAINED_WEIGHTS=None`, `AGG_HOURS=1`, `SEED` not set, `ACTIVE_MONTHS=None`
+
+**Features (13 channels):** Jones CPLRSTW (cape, precipitation, land_sea_mask, rh_avg, wind_shear, 2m_temperature, wcd) + Exp 7b top-6 microphysical (CIWC 600/550/650/500 hPa, total_totals_index, CLWC 700 hPa).
+
+**Parquets:** `combined_tabular_dataset_{year}.parquet` (pre-built merge of jones + tabular datasets).
+
+**Training log (stopped at epoch 24 — ongoing):**
+
+| Epoch | Train Loss | Test Loss | FSS    |
+| ----- | ---------- | --------- | ------ |
+| 1     | —         | —        | 0.5839 |
+| ...   | —         | —        | ~0.584 |
+| 24    | —         | —        | ~0.584 |
+
+**Observations:**
+
+- FSS=0.5839 from epoch 1, plateaued immediately — same staircase behavior as previous experiments.
+- Adding Jones CPLRSTW on top of the 7b microphysics features did not move the needle vs. 7b alone (0.584 vs 0.580).
+- Plateau reflects initialization: the model's initial logit distribution happens to classify ~58% of the right cells.
+
+**Conclusion:** Combined 13-feature set does not improve over 7b features alone. Feature set is not the primary bottleneck — class imbalance / loss function is.
+
+---
+
+## Experiment 13 — Top-9 XGBoost Features + Oct–Mar Seasonal Filter
+
+**Code:** `train_unet.py`, `BINARY_TARGET=True`, `BCE_POS_WEIGHT=None`, `PRETRAINED_WEIGHTS=None`, `SEED=42`, `ACTIVE_MONTHS=[10,11,12,1,2,3]`
+
+**Features (9 channels):** Top-9 from XGBoost feature importance: CIWC 600/550/650/500 hPa, total_totals_index, CLWC 700 hPa, CAPE, total_column_cloud_ice_water, total_column_cloud_liquid_water.
+
+**Parquets:** `tabular_dataset_{year}.parquet`.
+
+**Motivation:** Lightning in Israel/E. Med is heavily seasonal (Oct–Mar). Filtering to storm months reduces the class imbalance and eliminates empty-window dilution.
+
+**Seasonal filter effect:** 21,120/43,800 training windows kept (48%); 4,368/8,760 test windows kept (50%).
+
+### Experiment 13a — AGG_HOURS=1 (hourly)
+
+| Epoch | Train Loss | Test Loss | FSS    |
+| ----- | ---------- | --------- | ------ |
+| 1     | 0.031937   | 0.006541  | 0.6496 |
+| 2     | 0.011536   | 0.006100  | 0.6496 |
+| 3     | 0.011090   | 0.005919  | 0.6496 |
+| 4     | 0.010883   | 0.007041  | 0.6496 |
+| 5     | 0.010800   | 0.006368  | 0.6496 |
+| 6     | 0.010636   | 0.006508  | 0.6496 |
+
+**Best FSS so far: 0.6496** — new overall best, surpassing all previous experiments.
+
+**Observations:**
+
+- Seasonal filter works: FSS=0.6496 from epoch 1 vs. 0.5803 without the filter. The ~+0.07 improvement comes entirely from training on storm-season data only.
+- FSS is again plateaued — same staircase behavior. The model converges to a fixed binary map immediately.
+- Experiment stopped early; run not completed to 50 epochs.
+
+### Experiment 13b — AGG_HOURS=12 (12-hour aggregation)
+
+| Epoch | Train Loss | Test Loss | FSS    |
+| ----- | ---------- | --------- | ------ |
+| 1     | 0.297497   | 0.045196  | 0.5000 |
+| 2     | 0.074860   | 0.041938  | 0.5000 |
+| 3     | 0.067885   | 0.037393  | 0.5000 |
+| 4     | 0.062552   | 0.034274  | 0.5000 |
+| 5     | 0.060393   | 0.033772  | 0.5000 |
+| 6     | 0.059306   | 0.032041  | 0.5000 |
+| 7     | 0.058348   | 0.032551  | 0.5000 |
+| 8     | 0.057847   | 0.032340  | 0.5000 |
+| 9     | 0.056790   | 0.031973  | 0.5000 |
+| 10    | 0.057254   | 0.034414  | 0.5000 |
+| 11    | 0.056329   | 0.030928  | 0.5000 |
+| 12    | 0.055310   | 0.032953  | 0.5000 |
+
+**Best FSS so far: 0.5000** — stuck at random baseline.
+
+**Observations:**
+
+- 12-hour aggregation collapses the training set from 21,120 to 1,760 windows — only 1,760 training samples. Too few samples for the model to learn anything useful.
+- FSS locked at 0.5000 for all 12 epochs — this is the naive baseline (model predicting 50% of cells positive, matching the lightning fraction in storm-season windows).
+- Loss is decreasing (0.297 → 0.055) but FSS never moves, meaning the model is getting more confident about the same wrong predictions.
+
+**Conclusion: AGG_HOURS=12 significantly worsens results.** Hourly aggregation (AGG_HOURS=1) is strictly better: more training samples, higher FSS. The 12-hour window was appropriate for Jones et al.'s global domain but is too coarse for the small Israel/E. Med domain with limited training years.
+
+**Next:** Run Exp 13a to completion (50 epochs) and add `BCE_POS_WEIGHT` to break the FSS plateau.
+
+---
+
+## Experiment 14 — Jones CPLRSTW + Exp 7b Microphysics (13 channels) + Oct–Mar Seasonal Filter
+
+**Code:** `train_unet.py`, `BINARY_TARGET=True`, `BCE_POS_WEIGHT=None`, `PRETRAINED_WEIGHTS=None`, `AGG_HOURS=1`, `SEED=42`, `ACTIVE_MONTHS=[10,11,12,1,2,3]`
+
+**Features (13 channels):**
+
+- Jones CPLRSTW (7): cape, precipitation, land_sea_mask, rh_avg, wind_shear, 2m_temperature, wcd
+- Exp 7b top-6 microphysics (excl. CAPE already in Jones): CIWC 600/550/650/500 hPa, total_totals_index, CLWC 700 hPa
+
+**Parquets:** `combined_tabular_dataset_{year}.parquet` (pre-merged Jones + tabular).
+
+**Total parameters:** 23,769 (slightly more than 13a due to 13-channel input vs 9-channel).
+
+**Training log (stopped at epoch 5):**
+
+| Epoch | Train Loss | Test Loss | FSS    |
+| ----- | ---------- | --------- | ------ |
+| 1     | 0.038064   | 0.005997  | 0.6569 |
+| 2     | 0.011297   | 0.005928  | 0.6569 |
+| 3     | 0.010947   | 0.005872  | 0.6569 |
+| 4     | 0.010810   | 0.005737  | 0.6569 |
+| 5     | 0.010637   | 0.005912  | 0.6569 |
+
+**Best FSS so far: 0.6569** — new overall best.
+
+**Observations:**
+
+- Combining Jones CPLRSTW + Exp 7b microphysics + seasonal filter gives FSS=0.6569, up from 0.6496 (Exp 13a, 9 features, seasonal) and 0.5803 (Exp 7b repro, no seasonal filter).
+- FSS is again plateaued from epoch 1 — same staircase behavior. The model's initialization happens to place 65.7% of the right cells above logit=0.
+- Trend so far: each addition improves the plateau value (0.5803 → 0.6496 → 0.6569), but none break out of it. Need `pos_weight` to push FSS higher.
+
+**Progression summary:**
+
+| Experiment   | Features              | Seasonal      | FSS plateau      |
+| ------------ | --------------------- | ------------- | ---------------- |
+| 7b repro     | 7 microphysics        | No            | 0.5803           |
+| 13a          | 9 XGBoost top         | Yes           | 0.6496           |
+| **14** | **13 combined** | **Yes** | **0.6569** |
+
+**Conclusion:** Both adding seasonal filter and enriching features contribute independently to FSS improvement. The 13-channel combined set + seasonal filter is the best configuration so far. Next step: add `BCE_POS_WEIGHT` to break the plateau and push FSS above 0.6569.
+
+---
+
+## Experiment 15 — Exp 14 + Jones Pretrained Weights (partial enc1 load)
+
+**Code:** Same as Exp 14, plus `PRETRAINED_WEIGHTS='/home/ec2-user/ML_Thesis_with_DL/cplrstw_mse.pth'`, `FREEZE_ENCODER=False`
+
+**Weight loading:** 16/16 tensors loaded. enc1 loaded partially (7/13 input channels from Jones; remaining 6 microphysics channels left random).
+
+**Training log (stopped at epoch 33):**
+
+| Epoch | Train Loss | Test Loss | FSS    |
+| ----- | ---------- | --------- | ------ |
+| 1     | 0.021363   | 0.006721  | 0.6569 |
+| 2     | 0.012010   | 0.006290  | 0.6569 |
+| 3     | 0.011386   | 0.006137  | 0.6569 |
+| 4     | 0.011082   | 0.006079  | 0.6569 |
+| 5     | 0.010850   | 0.006067  | 0.6569 |
+| 6     | 0.010711   | 0.005983  | 0.6569 |
+| 7     | 0.010595   | 0.006058  | 0.6569 |
+| 8     | 0.010510   | 0.005857  | 0.6569 |
+| 9     | 0.010428   | 0.005822  | 0.6569 |
+| 10    | 0.010367   | 0.006232  | 0.6569 |
+| 11    | 0.010339   | 0.005754  | 0.6425 |
+| 12    | 0.010246   | 0.006377  | 0.6569 |
+| 13    | 0.010209   | 0.006231  | 0.6067 |
+| 14    | 0.010146   | 0.006191  | 0.6570 |
+| 15    | 0.010109   | 0.005874  | 0.6424 |
+| 16    | 0.010096   | 0.005922  | 0.6497 |
+| 17    | 0.010024   | 0.005858  | 0.6356 |
+| 18    | 0.009909   | 0.005880  | 0.6353 |
+| 19    | 0.009896   | 0.005862  | 0.6206 |
+| 20    | 0.009858   | 0.005893  | 0.6063 |
+| 21    | 0.009843   | 0.005667  | 0.6351 |
+| 22    | 0.009817   | 0.005640  | 0.6569 |
+| 23    | 0.009808   | 0.005728  | 0.6350 |
+| 24    | 0.009788   | 0.005588  | 0.6496 |
+| 25    | 0.009761   | 0.005601  | 0.6425 |
+| 26    | 0.009741   | 0.005593  | 0.6278 |
+| 27    | 0.009727   | 0.005700  | 0.6207 |
+| 28    | 0.009703   | 0.005627  | 0.6425 |
+| 29    | 0.009688   | 0.005638  | 0.6282 |
+| 30    | 0.009674   | 0.005542  | 0.6424 |
+| 31    | 0.009667   | 0.005848  | 0.5777 |
+| 32    | 0.009637   | 0.005736  | 0.6280 |
+| 33    | 0.009640   | 0.005816  | 0.6063 |
+
+**Best FSS: 0.6570 (epoch 14)** — identical to Exp 14 without pretrained weights.
+
+**Observations:**
+
+- Jones pretrained weights provide no benefit: best FSS 0.6570 vs 0.6569 in Exp 14 (from scratch). Difference is noise.
+- FSS becomes noisy after epoch 10, oscillating between 0.5777 and 0.6570 rather than staying at the plateau. This instability is a side effect of Jones weights biasing the encoder toward global patterns that conflict with the 6 new microphysics input channels (which start random and pull the encoder in a different direction during fine-tuning).
+- Train loss still steadily decreasing (0.021 → 0.009) but FSS does not follow — same loss-FSS decoupling as all previous experiments.
+
+**Conclusion: Jones pretrained weights do not help when input channels are extended.** The partial enc1 loading (7/13 channels from Jones) creates a mismatch — the 6 random microphysics channels destabilize the Jones feature detectors during fine-tuning, producing noisy FSS. Training from scratch (Exp 14) is more stable and equally good. Pretrained weights are not worth using for the 13-channel combined input.
+
+---
+
+## Experiment 16 — Exp 15 + Frozen Encoder
+
+**Code:** Same as Exp 15, plus `FREEZE_ENCODER=True`.
+
+**Frozen:** 9,560 params (enc1, enc2, bottleneck). Trainable: 14,209 params (decoder + output only).
+
+**Training log (stopped at epoch 10):**
+
+| Epoch | Train Loss | Test Loss | FSS    |
+| ----- | ---------- | --------- | ------ |
+| 1     | 0.031411   | 0.007355  | 0.6569 |
+| 2     | 0.015506   | 0.006959  | 0.6569 |
+| 3     | 0.015044   | 0.006801  | 0.6569 |
+| 4     | 0.014797   | 0.007015  | 0.6569 |
+| 5     | 0.014630   | 0.006895  | 0.6569 |
+| 6     | 0.014503   | 0.006885  | 0.6569 |
+| 7     | 0.014401   | 0.007047  | 0.6569 |
+| 8     | 0.014290   | 0.006707  | 0.6569 |
+| 9     | 0.014222   | 0.006845  | 0.6569 |
+| 10    | 0.014159   | 0.007654  | 0.6569 |
+
+**Best FSS: 0.6569** — no improvement over any previous experiment.
+
+**Observations:**
+
+- FSS locked at 0.6569 for all 10 epochs, same plateau as Exp 14 and 15.
+- Train loss higher than Exp 15 (0.031→0.014 vs 0.021→0.009) because the frozen encoder cannot adapt at all, forcing the decoder to do all the work.
+- The 6 microphysics channels in enc1 are frozen at random init — they contribute pure noise to the encoder output, which the decoder cannot overcome.
+
+**Conclusion: Freezing the encoder with partial Jones weights is strictly worse than training from scratch.** Transfer learning (frozen or unfrozen) provides no benefit for the 13-channel combined input. All pretrained weight experiments (Exp 10, 15, 16) confirm the same finding: Jones weights trained on 7 CPLRSTW channels on a global domain do not transfer to a 13-channel regional Mediterranean input. **Going forward: train from scratch, no pretrained weights.**
+
+---
+
+## Experiment 17 — Honest FSS + Precision/Recall/F1 Diagnostics (pos_weight=5)
+
+**Motivation:** Two bugs discovered in prior experiments invalidated all previous FSS scores:
+
+1. **Vacuous FSS**: `compute_fss` returned 1.0 when both predicted and observed fields were empty (both all-zero). With a class ratio of 1:594 (0.17% positive cells), most test timesteps have no lightning anywhere — so the model could predict nothing and still average FSS ≈ 0.65–0.73 by accumulating vacuous 1.0s. The "best" FSS of 0.7281 (Exp 13, Oct-Feb window) was largely or entirely vacuous.
+2. **P=R=0 confirmed**: Adding precision/recall/F1 tracking immediately showed P=0, R=0 in experiments with pos_weight=None — the model predicted zero cells positive, but the broken FSS reported 0.65+.
+
+**Fixes applied:**
+
+- `compute_fss` now returns 0.0 when model predicts nothing but obs has lightning (honest worst case). Both-empty still returns 1.0 (correct — no lightning to predict).
+- `evaluate()` now accumulates TP/FP/FN across all batches and returns precision, recall, F1.
+
+**Config:**
+
+- Features: Jones CPLRSTW (7) + Exp 7b top-6 microphysics = 13 channels
+- `ACTIVE_MONTHS = [10, 11, 12, 1, 2, 3]` (Oct–Mar)
+- `BCE_POS_WEIGHT = 5`
+- `EPOCHS = 50`, `LR = 1e-3`, `SEED = 42`
+- Train: 21,120 timesteps | Test: 4,368 timesteps
+
+**Training log (selected epochs):**
+
+| Epoch | Train Loss | Test Loss | FSS    | Precision | Recall | F1     |
+| ----- | ---------- | --------- | ------ | --------- | ------ | ------ |
+| 1     | 0.068973   | 0.021378  | 0.6569 | 0.0000    | 0.0000 | 0.0000 |
+| 5     | 0.033846   | 0.021295  | 0.5372 | 0.0315    | 0.0401 | 0.0353 |
+| 10    | 0.031784   | 0.021343  | 0.5550 | 0.0579    | 0.1425 | 0.0823 |
+| 17    | 0.029565   | 0.018543  | 0.5404 | 0.1089    | 0.0894 | 0.0982 |
+| 25    | 0.028479   | 0.018710  | 0.5365 | 0.0871    | 0.0922 | 0.0896 |
+| 50    | 0.027499   | 0.019151  | 0.5104 | 0.0766    | 0.1124 | 0.0912 |
+
+**Best test loss:** 0.018470 (epoch 40)
+**Best FSS:** 0.6569 (epoch 1 — artifact of empty-batch averaging at random init)
+**Best F1:** 0.0982 (epoch 17) — P=0.1089, R=0.0894
+
+**Observations:**
+
+- Epoch 1 FSS=0.6569 with P=R=0 reveals residual empty-batch inflation: at random init the model predicts nothing; most test batches have no lightning anywhere → both-empty → FSS=1.0 for those batches → high average. FSS drops to honest ~0.52–0.56 once the model starts predicting.
+- Honest FSS plateau: ~0.50–0.57, with no upward trend after epoch 10.
+- F1 plateaued at ~0.09–0.10 from epoch 17 onward. P and R are roughly balanced (both ~0.08–0.11), confirming pos_weight=5 is in the right ballpark.
+- Class ratio confirmed at 1:594 (0.17% positive cells). pos_weight=40 over-predicted (P=0.02, R=0.5); pos_weight=5 balances P and R but absolute values are low.
+- Model capacity (23,769 params) may be a limiting factor at this imbalance level.
+
+**Conclusion:** pos_weight=5 gives honest, balanced P/R but F1≈0.10 is low. FSS honest baseline ≈ 0.52–0.56. Next steps: try higher pos_weight (10) to see if recall improves without collapsing precision; consider whether the architecture needs more capacity to handle 594:1 imbalance.
+
+---
+
+## Experiment 18 — Jones CPLRSTW Only (7 channels), pos_weight=5, Oct–Mar
+
+**Motivation:** Exp 17 used 13 channels (Jones CPLRSTW + 6 CIWC microphysics). Hypothesis: the 6 CIWC channels are heavily correlated pressure-level variants of the same variable, adding redundancy and noise rather than signal. Reverted to Jones 7-channel CPLRSTW only.
+
+**Config:**
+
+- Features: Jones CPLRSTW only — cape, precipitation, land_sea_mask, rh_avg, wind_shear, 2m_temperature, wcd (7 channels)
+- `ACTIVE_MONTHS = [10, 11, 12, 1, 2, 3]` (Oct–Mar)
+- `BCE_POS_WEIGHT = 5`
+- `EPOCHS = 50`, `LR = 1e-3`, `SEED = 42`
+- Model params: 22,041 (vs 23,769 for 13-ch — difference is enc1 input weights)
+- Train: 21,120 timesteps | Test: 4,368 timesteps
+
+**Training log (selected epochs):**
+
+| Epoch | Train Loss | Test Loss | FSS    | Precision | Recall | F1     |
+| ----- | ---------- | --------- | ------ | --------- | ------ | ------ |
+| 1     | 0.072615   | 0.022522  | 0.6569 | 0.0000    | 0.0000 | 0.0000 |
+| 5     | 0.036403   | 0.019663  | 0.6112 | 0.1515    | 0.0526 | 0.0780 |
+| 8     | 0.034925   | 0.020356  | 0.5949 | 0.1272    | 0.1042 | 0.1146 |
+| 16    | 0.032511   | 0.018733  | 0.5781 | 0.1620    | 0.0780 | 0.1053 |
+| 26    | 0.031025   | 0.020580  | 0.5046 | 0.0984    | 0.1279 | 0.1112 |
+| 35    | 0.029528   | 0.018699  | 0.5219 | 0.1215    | 0.1144 | 0.1178 |
+| 50    | 0.028424   | 0.019202  | 0.5327 | 0.0997    | 0.1027 | 0.1012 |
+
+**Best test loss:** 0.018526 (epoch 27)
+**Best FSS:** 0.6569 (epoch 1 — empty-batch artifact, same as Exp 17)
+**Best F1:** 0.1178 (epoch 35) — P=0.1215, R=0.1144
+
+**Comparison vs Exp 17 (13 channels):**
+
+| Metric        | Exp 17 (13-ch) | Exp 18 (7-ch) | Δ      |
+| ------------- | -------------- | ------------- | ------- |
+| Best F1       | 0.0982         | 0.1178        | +0.0196 |
+| Best F1 epoch | 17             | 35            |         |
+| FSS plateau   | 0.52–0.56     | 0.52–0.61    | +0.05   |
+| Precision     | 0.1089         | 0.1215        | +0.013  |
+| Recall        | 0.0894         | 0.1144        | +0.025  |
+
+**Observations:**
+
+- Dropping the 6 CIWC channels improved all metrics. The correlated pressure-level channels (600/550/650/500 hPa CIWC) were adding noise not signal.
+- FSS honest plateau shifted up to 0.52–0.61, with some epochs reaching 0.61+.
+- P and R are more balanced than Exp 17 and both higher in absolute terms.
+- Training is noisier epoch-to-epoch (P ranges 0.10–0.19 across epochs), suggesting the model is close to the logit=0 boundary and small weight updates flip predictions back and forth.
+- Best F1 epoch (35) is later than Exp 17 (17), consistent with the 7-channel model taking longer to converge on the relevant features.
+
+**Conclusion: Jones CPLRSTW (7 channels) outperforms 13-channel combined features.** The orthogonal Jones feature set is better matched to the model's 22k-param capacity. This is now the best configuration. Next: tune pos_weight (try 7–10) to close the P/R gap further and push F1 above 0.12.

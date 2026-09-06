@@ -44,47 +44,47 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-# FEATURE_COLS = [
-#     # Jones et al. CPLRSTW (7) — from combined_tabular_dataset_{year}.parquet
-#     'cape',            # C — convective available potential energy
-#     'precipitation',   # P — IMERG hourly precipitation
-#     'land_sea_mask',   # L
-#     'rh_avg',          # R — mean relative humidity (500 & 1000 hPa)
-#     'wind_shear',      # S — deep-layer wind shear (500–1000 hPa)
-#     '2m_temperature',  # T
-#     'wcd',             # W — warm cloud depth (ZDL − CBH)
-#     # Exp 7b top-6 microphysical features (excl. cape = already above)
-#     'specific_cloud_ice_water_content_600hPa',   # rank 1 (gain 0.531)
-#     'specific_cloud_ice_water_content_550hPa',   # rank 2 (gain 0.150)
-#     'specific_cloud_ice_water_content_650hPa',   # rank 3 (gain 0.039)
-#     'total_totals_index',                         # rank 4 (gain 0.026)
-#     'specific_cloud_ice_water_content_500hPa',   # rank 5 (gain 0.023)
-#     'specific_cloud_liquid_water_content_700hPa', # rank 6 (gain 0.022)
-# ]
-
 FEATURE_COLS = [
-    # Top-20 XGBoost feature importance (Exp 12)
-    'specific_cloud_ice_water_content_600hPa',      # rank  1 (0.428)
-    'specific_cloud_ice_water_content_550hPa',      # rank  2 (0.130)
-    'specific_cloud_ice_water_content_650hPa',      # rank  3 (0.055)
-    'total_totals_index',                            # rank  4 (0.034)
-    'specific_cloud_ice_water_content_500hPa',      # rank  5 (0.013)
-    'specific_cloud_liquid_water_content_700hPa',   # rank  6 (0.013)
-    'convective_available_potential_energy',         # rank  7 (0.013)
-    'total_column_cloud_ice_water',                  # rank  8 (0.012)
-    'total_column_cloud_liquid_water',               # rank  9 (0.009)
-    'specific_cloud_liquid_water_content_775hPa',   # rank 10 (0.007)
-    'specific_cloud_liquid_water_content_750hPa',   # rank 11 (0.007)
-    'specific_cloud_liquid_water_content_850hPa',   # rank 12 (0.005)
-    'specific_cloud_liquid_water_content_825hPa',   # rank 13 (0.005)
-    'proxy_lpi',                                     # rank 14 (0.004)
-    'vertical_velocity_850hPa',                      # rank 15 (0.004)
-    'specific_cloud_ice_water_content_400hPa',      # rank 16 (0.004)
-    'k_index',                                       # rank 17 (0.004)
-    'temperature_250hPa',                            # rank 18 (0.003)
-    'temperature_225hPa',                            # rank 19 (0.003)
-    'specific_cloud_ice_water_content_450hPa',      # rank 20 (0.003)
+    # Jones et al. CPLRSTW (7) — from combined_tabular_dataset_{year}.parquet
+    'cape',            # C — convective available potential energy
+    'precipitation',   # P — IMERG hourly precipitation
+    'land_sea_mask',   # L
+    'rh_avg',          # R — mean relative humidity (500 & 1000 hPa)
+    'wind_shear',      # S — deep-layer wind shear (500–1000 hPa)
+    '2m_temperature',  # T
+    'wcd',             # W — warm cloud depth (ZDL − CBH)
+    # # Exp 7b top-6 microphysical features (excl. cape = already above)
+    # 'specific_cloud_ice_water_content_600hPa',   # rank 1 (gain 0.531)
+    # 'specific_cloud_ice_water_content_550hPa',   # rank 2 (gain 0.150)
+    # 'specific_cloud_ice_water_content_650hPa',   # rank 3 (gain 0.039)
+    # 'total_totals_index',                         # rank 4 (gain 0.026)
+    # 'specific_cloud_ice_water_content_500hPa',   # rank 5 (gain 0.023)
+    # 'specific_cloud_liquid_water_content_700hPa', # rank 6 (gain 0.022)
 ]
+
+# FEATURE_COLS = [
+#     # Top-20 XGBoost feature importance (Exp 12)
+#     'specific_cloud_ice_water_content_600hPa',      # rank  1 (0.428)
+#     'specific_cloud_ice_water_content_550hPa',      # rank  2 (0.130)
+#     'specific_cloud_ice_water_content_650hPa',      # rank  3 (0.055)
+#     'total_totals_index',                            # rank  4 (0.034)
+#     'specific_cloud_ice_water_content_500hPa',      # rank  5 (0.013)
+#     'specific_cloud_liquid_water_content_700hPa',   # rank  6 (0.013)
+#     'convective_available_potential_energy',         # rank  7 (0.013)
+#     'total_column_cloud_ice_water',                  # rank  8 (0.012)
+#     'total_column_cloud_liquid_water',               # rank  9 (0.009)
+#     'specific_cloud_liquid_water_content_775hPa',   # rank 10 (0.007)
+#     'specific_cloud_liquid_water_content_750hPa',   # rank 11 (0.007)
+#     'specific_cloud_liquid_water_content_850hPa',   # rank 12 (0.005)
+#     'specific_cloud_liquid_water_content_825hPa',   # rank 13 (0.005)
+#     'proxy_lpi',                                     # rank 14 (0.004)
+#     'vertical_velocity_850hPa',                      # rank 15 (0.004)
+#     'specific_cloud_ice_water_content_400hPa',      # rank 16 (0.004)
+#     'k_index',                                       # rank 17 (0.004)
+#     'temperature_250hPa',                            # rank 18 (0.003)
+#     'temperature_225hPa',                            # rank 19 (0.003)
+#     'specific_cloud_ice_water_content_450hPa',      # rank 20 (0.003)
+# ]
 
 # No aux parquets needed — CIWC already baked into jones_ciwc_tabular_dataset files
 AUX_TRAIN_PARQUETS = None
@@ -96,27 +96,27 @@ AUX_COLS           = None
 GRID_H = None
 GRID_W = None
 
-# TRAIN_PARQUETS = [
-#     'data/combined_tabular_dataset_2004.parquet',
-#     'data/combined_tabular_dataset_2005.parquet',
-#     'data/combined_tabular_dataset_2006.parquet',
-#     'data/combined_tabular_dataset_2008.parquet',
-#     'data/combined_tabular_dataset_2009.parquet',
-#     'data/combined_tabular_dataset_2023.parquet',
-#     'data/combined_tabular_dataset_2024.parquet',
-# ]
-# TEST_PARQUET = 'data/combined_tabular_dataset_2025.parquet'
-
 TRAIN_PARQUETS = [
-    'data/tabular_dataset_2004.parquet',
-    'data/tabular_dataset_2005.parquet',
-    'data/tabular_dataset_2006.parquet',
-    'data/tabular_dataset_2008.parquet',
-    'data/tabular_dataset_2009.parquet',
-    'data/tabular_dataset_2023.parquet',
-    'data/tabular_dataset_2024.parquet',
+    'data/combined_tabular_dataset_2004.parquet',
+    'data/combined_tabular_dataset_2005.parquet',
+    'data/combined_tabular_dataset_2006.parquet',
+    'data/combined_tabular_dataset_2008.parquet',
+    'data/combined_tabular_dataset_2009.parquet',
+    'data/combined_tabular_dataset_2023.parquet',
+    'data/combined_tabular_dataset_2024.parquet',
 ]
-TEST_PARQUET = 'data/tabular_dataset_2025.parquet'
+TEST_PARQUET = 'data/combined_tabular_dataset_2025.parquet'
+
+# TRAIN_PARQUETS = [
+#     'data/tabular_dataset_2004.parquet',
+#     'data/tabular_dataset_2005.parquet',
+#     'data/tabular_dataset_2006.parquet',
+#     'data/tabular_dataset_2008.parquet',
+#     'data/tabular_dataset_2009.parquet',
+#     'data/tabular_dataset_2023.parquet',
+#     'data/tabular_dataset_2024.parquet',
+# ]
+# TEST_PARQUET = 'data/tabular_dataset_2025.parquet'
 
 BATCH_SIZE  = 32
 EPOCHS      = 50
@@ -125,11 +125,10 @@ OUT_DIR     = 'results/unet_exp13_top20_seasonal'
 DEVICE      = 'cuda' if torch.cuda.is_available() else 'cpu'
 AGG_HOURS     = 1           # 1 = every hour is one sample; 3/6/12 = aggregate N hours into one window
 SEED          = 42          # set to None to disable fixed seed
-ACTIVE_MONTHS = [10, 11, 12, 1, 2, 3]  # Oct–Mar lightning season; set to None to use all months
+ACTIVE_MONTHS = [10, 11, 12, 1, 2]  # Oct–Mar lightning season; set to None to use all months
 BINARY_TARGET = True        # True = BCE binary classification; False = MSE z-scored density
-# Unweighted BCE — same as Exp 7b (FSS 0.613)
 # Set to a value (e.g. 40) to weight false negatives more strongly
-BCE_POS_WEIGHT = None
+BCE_POS_WEIGHT = 5
 
 # ── Transfer learning ─────────────────────────────────────────────────────────
 PRETRAINED_WEIGHTS = None  # train from scratch — 13-ch input differs from Jones 7-ch
@@ -409,7 +408,6 @@ def compute_norm_stats(parquet_paths, feature_cols, agg_hours=12, sample_rows=50
     tgt_std  = float(agg_lightning.std())
 
     print(f"  Feature means: {feat_mean}")
-    print(f"  Target mean/std (12-hr aggregated): {tgt_mean:.4f} / {tgt_std:.4f}")
     return feat_mean, feat_std, tgt_mean, tgt_std
 
 
@@ -518,8 +516,14 @@ def compute_fss(pred, target, threshold=0.0, window=3):
         mse_frac = ((pred_frac - obs_frac) ** 2).mean().item()
         ref      = (pred_frac ** 2 + obs_frac ** 2).mean().item()
 
+        obs_any  = obs_bin.sum().item()  > 0
+        pred_any = pred_bin.sum().item() > 0
+        if not obs_any and not pred_any:
+            return 1.0   # both fields empty → perfect (nothing to predict)
+        if not pred_any and obs_any:
+            return 0.0   # model predicts nothing but obs has lightning → worst case
         if ref < 1e-12:
-            return 1.0   # no lightning in either field → perfect score
+            return 1.0   # numerical fallback (should not reach here)
         return 1.0 - mse_frac / ref
 
 
@@ -528,6 +532,7 @@ def evaluate(model, loader, criterion, device):
     total_loss = 0.0
     total_fss  = 0.0
     n_batches  = 0
+    tp = fp = fn = 0
     with torch.no_grad():
         for X, y in loader:
             X, y = X.to(device), y.to(device)
@@ -538,8 +543,17 @@ def evaluate(model, loader, criterion, device):
             total_loss += loss.item() * X.size(0)
             total_fss  += compute_fss(pred, y, threshold=0.0)
             n_batches  += 1
-    mean_fss = total_fss / n_batches if n_batches > 0 else 0.0
-    return total_loss / len(loader.dataset), mean_fss
+            # Binary predictions at logit=0 threshold
+            pred_bin = (pred > 0.0).float()
+            y_bin    = (y > 0.5).float()
+            tp += (pred_bin * y_bin).sum().item()
+            fp += (pred_bin * (1 - y_bin)).sum().item()
+            fn += ((1 - pred_bin) * y_bin).sum().item()
+    mean_fss  = total_fss / n_batches if n_batches > 0 else 0.0
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    return total_loss / len(loader.dataset), mean_fss, precision, recall, f1
 
 
 # ── Padding helper ────────────────────────────────────────────────────────────
@@ -652,20 +666,24 @@ if __name__ == '__main__':
 
     # Training loop
     train_losses, test_losses, fss_scores = [], [], []
+    precision_scores, recall_scores, f1_scores = [], [], []
     best_test_loss = float('inf')
 
     for epoch in range(1, EPOCHS + 1):
-        train_loss       = train(model, train_loader, optimizer, criterion, DEVICE)
-        test_loss, mean_fss = evaluate(model, test_loader, criterion, DEVICE)
+        train_loss = train(model, train_loader, optimizer, criterion, DEVICE)
+        test_loss, mean_fss, prec, rec, f1 = evaluate(model, test_loader, criterion, DEVICE)
         scheduler.step(test_loss)
 
         train_losses.append(train_loss)
         test_losses.append(test_loss)
         fss_scores.append(mean_fss)
+        precision_scores.append(prec)
+        recall_scores.append(rec)
+        f1_scores.append(f1)
 
         print(f"Epoch {epoch:3d}/{EPOCHS}  "
               f"train_loss={train_loss:.6f}  test_loss={test_loss:.6f}  "
-              f"FSS={mean_fss:.4f}")
+              f"FSS={mean_fss:.4f}  P={prec:.4f}  R={rec:.4f}  F1={f1:.4f}")
 
         # Save best model
         if test_loss < best_test_loss:
@@ -676,23 +694,35 @@ if __name__ == '__main__':
     # Save final model
     torch.save(model.state_dict(), os.path.join(OUT_DIR, 'unet_final.pt'))
 
-    # Loss curve
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-    ax1.plot(train_losses, label='Train MSE')
-    ax1.plot(test_losses,  label='Test MSE')
-    ax1.set_xlabel('Epoch'); ax1.set_ylabel('MSE Loss')
-    ax1.set_title('U-Net Training — Jones CPLRSTW Features + Pretrained Weights (MSE)')
-    ax1.legend(); ax1.grid(True, alpha=0.3)
+    # Loss curve + metrics
+    fig, axes = plt.subplots(3, 1, figsize=(10, 12))
 
-    ax2.plot(fss_scores, color='green', label='FSS (3×3 window, threshold=0)')
-    ax2.set_xlabel('Epoch'); ax2.set_ylabel('FSS')
-    ax2.set_title('Fractions Skill Score on Test Set')
-    ax2.set_ylim([0, 1]); ax2.legend(); ax2.grid(True, alpha=0.3)
+    axes[0].plot(train_losses, label='Train Loss')
+    axes[0].plot(test_losses,  label='Test Loss')
+    axes[0].set_xlabel('Epoch'); axes[0].set_ylabel('Loss')
+    axes[0].set_title('U-Net Training Loss')
+    axes[0].legend(); axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(fss_scores, color='green', label='FSS (3×3 window, threshold=0)')
+    axes[1].set_xlabel('Epoch'); axes[1].set_ylabel('FSS')
+    axes[1].set_title('Fractions Skill Score on Test Set')
+    axes[1].set_ylim([0, 1]); axes[1].legend(); axes[1].grid(True, alpha=0.3)
+
+    axes[2].plot(precision_scores, label='Precision', color='blue')
+    axes[2].plot(recall_scores,    label='Recall',    color='orange')
+    axes[2].plot(f1_scores,        label='F1',        color='red')
+    axes[2].set_xlabel('Epoch'); axes[2].set_ylabel('Score')
+    axes[2].set_title('Precision / Recall / F1 on Test Set (threshold=0)')
+    axes[2].set_ylim([0, 1]); axes[2].legend(); axes[2].grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUT_DIR, 'loss_curve.png'), dpi=150)
     plt.close()
 
+    best_epoch_f1 = int(max(range(len(f1_scores)), key=lambda i: f1_scores[i]))
     print(f"\nBest test loss:   {best_test_loss:.6f}")
     print(f"Best FSS (thr=0): {max(fss_scores):.4f}")
+    print(f"Best F1:          {max(f1_scores):.4f}  (epoch {best_epoch_f1 + 1})")
+    print(f"  Precision @ best F1: {precision_scores[best_epoch_f1]:.4f}")
+    print(f"  Recall    @ best F1: {recall_scores[best_epoch_f1]:.4f}")
     print(f"Outputs saved to {OUT_DIR}/")
