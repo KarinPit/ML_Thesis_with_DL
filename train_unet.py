@@ -63,14 +63,27 @@ import matplotlib.pyplot as plt
 # ]
 
 FEATURE_COLS = [
-    # Exp 7b feature set — top-7 LightGBM features, gave FSS 0.613
-    'specific_cloud_ice_water_content_600hPa',    # rank 1 (gain 0.531)
-    'specific_cloud_ice_water_content_550hPa',    # rank 2 (gain 0.150)
-    'specific_cloud_ice_water_content_650hPa',    # rank 3 (gain 0.039)
-    'total_totals_index',                          # rank 4 (gain 0.026)
-    'specific_cloud_ice_water_content_500hPa',    # rank 5 (gain 0.023)
-    'specific_cloud_liquid_water_content_700hPa', # rank 6 (gain 0.022)
-    'convective_available_potential_energy',       # rank 7 (gain 0.018)
+    # Top-20 XGBoost feature importance (Exp 12)
+    'specific_cloud_ice_water_content_600hPa',      # rank  1 (0.428)
+    'specific_cloud_ice_water_content_550hPa',      # rank  2 (0.130)
+    'specific_cloud_ice_water_content_650hPa',      # rank  3 (0.055)
+    'total_totals_index',                            # rank  4 (0.034)
+    'specific_cloud_ice_water_content_500hPa',      # rank  5 (0.013)
+    'specific_cloud_liquid_water_content_700hPa',   # rank  6 (0.013)
+    'convective_available_potential_energy',         # rank  7 (0.013)
+    'total_column_cloud_ice_water',                  # rank  8 (0.012)
+    'total_column_cloud_liquid_water',               # rank  9 (0.009)
+    'specific_cloud_liquid_water_content_775hPa',   # rank 10 (0.007)
+    'specific_cloud_liquid_water_content_750hPa',   # rank 11 (0.007)
+    'specific_cloud_liquid_water_content_850hPa',   # rank 12 (0.005)
+    'specific_cloud_liquid_water_content_825hPa',   # rank 13 (0.005)
+    'proxy_lpi',                                     # rank 14 (0.004)
+    'vertical_velocity_850hPa',                      # rank 15 (0.004)
+    'specific_cloud_ice_water_content_400hPa',      # rank 16 (0.004)
+    'k_index',                                       # rank 17 (0.004)
+    'temperature_250hPa',                            # rank 18 (0.003)
+    'temperature_225hPa',                            # rank 19 (0.003)
+    'specific_cloud_ice_water_content_450hPa',      # rank 20 (0.003)
 ]
 
 # No aux parquets needed — CIWC already baked into jones_ciwc_tabular_dataset files
@@ -108,11 +121,12 @@ TEST_PARQUET = 'data/tabular_dataset_2025.parquet'
 BATCH_SIZE  = 32
 EPOCHS      = 50
 LR          = 1e-3   # Exp 7b LR (training from scratch)
-OUT_DIR     = 'results/unet_exp7b_repro'
+OUT_DIR     = 'results/unet_exp13_top20_seasonal'
 DEVICE      = 'cuda' if torch.cuda.is_available() else 'cpu'
-AGG_HOURS   = 1      # 1 = every hour is one sample; 3/6/12 = aggregate N hours into one window
-SEED        = 42     # set to None to disable fixed seed
-BINARY_TARGET = True  # True = BCE binary classification; False = MSE z-scored density
+AGG_HOURS     = 1           # 1 = every hour is one sample; 3/6/12 = aggregate N hours into one window
+SEED          = 42          # set to None to disable fixed seed
+ACTIVE_MONTHS = [10, 11, 12, 1, 2, 3]  # Oct–Mar lightning season; set to None to use all months
+BINARY_TARGET = True        # True = BCE binary classification; False = MSE z-scored density
 # Unweighted BCE — same as Exp 7b (FSS 0.613)
 # Set to a value (e.g. 40) to weight false negatives more strongly
 BCE_POS_WEIGHT = None
@@ -221,7 +235,8 @@ class LightningGridDataset(Dataset):
     def __init__(self, parquet_paths, feature_cols, grid_h, grid_w,
                  feat_mean=None, feat_std=None, tgt_mean=None, tgt_std=None,
                  agg_hours=12, binary_target=False,
-                 aux_parquet_paths=None, aux_cols=None):
+                 aux_parquet_paths=None, aux_cols=None,
+                 active_months=None):
         self.feature_cols = feature_cols
         self.grid_h   = grid_h
         self.grid_w   = grid_w
@@ -280,7 +295,15 @@ class LightningGridDataset(Dataset):
         for t, wl in zip(all_times, win_labels):
             win_dict[wl.to_datetime64()].append(t)
 
-        self.windows         = np.array(sorted(win_dict.keys()))
+        all_windows = np.array(sorted(win_dict.keys()))
+
+        # Filter to active months (e.g. Oct–Mar lightning season)
+        if active_months:
+            keep = np.array([pd.Timestamp(w).month in active_months for w in all_windows])
+            all_windows = all_windows[keep]
+            print(f"  Seasonal filter: months {active_months} → {keep.sum():,}/{len(keep):,} windows kept")
+
+        self.windows         = all_windows
         self.window_to_times = {w: sorted(ts) for w, ts in win_dict.items()}
         print(f"  Dataset: {len(self.windows):,} {agg_hours}-hour windows × {grid_h}×{grid_w} grid")
 
@@ -582,12 +605,14 @@ if __name__ == '__main__':
         feat_mean, feat_std, tgt_mean, tgt_std, agg_hours=AGG_HOURS,
         binary_target=BINARY_TARGET,
         aux_parquet_paths=AUX_TRAIN_PARQUETS, aux_cols=AUX_COLS,
+        active_months=ACTIVE_MONTHS,
     )
     test_ds = LightningGridDataset(
         [TEST_PARQUET], FEATURE_COLS, grid_h, grid_w,
         feat_mean, feat_std, tgt_mean, tgt_std, agg_hours=AGG_HOURS,
         binary_target=BINARY_TARGET,
         aux_parquet_paths=[AUX_TEST_PARQUET], aux_cols=AUX_COLS,
+        active_months=ACTIVE_MONTHS,
     )
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=4)
