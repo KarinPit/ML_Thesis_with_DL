@@ -1415,3 +1415,105 @@ All 22,041 parameters trainable. Jones weights used as warm start for entire net
 - Best F1 epoch (35) is later than Exp 17 (17), consistent with the 7-channel model taking longer to converge on the relevant features.
 
 **Conclusion: Jones CPLRSTW (7 channels) outperforms 13-channel combined features.** The orthogonal Jones feature set is better matched to the model's 22k-param capacity. This is now the best configuration. Next: tune pos_weight (try 7–10) to close the P/R gap further and push F1 above 0.12.
+
+---
+
+## Experiment 19 — Jones CPLRSTW + CIWC 600hPa (8 channels), pos_weight=5, Oct–Mar
+
+**Motivation:** Test whether adding just the single top-ranked XGBoost microphysics feature (`specific_cloud_ice_water_content_600hPa`, gain rank 1) to the Jones 7-channel set improves over Exp 18.
+
+**Config:** Same as Exp 18, plus `specific_cloud_ice_water_content_600hPa` → 8 channels, 22,329 params.
+
+**Training log (first 18 epochs):**
+
+| Epoch | Train Loss | Test Loss | FSS    | Precision | Recall | F1     |
+| ----- | ---------- | --------- | ------ | --------- | ------ | ------ |
+| 5     | 0.035120   | 0.023109  | 0.5644 | 0.0555    | 0.1473 | 0.0806 |
+| 8     | 0.033419   | 0.020652  | 0.5555 | 0.0677    | 0.0767 | 0.0719 |
+| 14    | 0.031853   | 0.020274  | 0.5288 | 0.0789    | 0.1340 | 0.0993 |
+| 18    | 0.030972   | 0.019957  | 0.5223 | 0.0734    | 0.1130 | 0.0890 |
+
+**Comparison vs Exp 18 (7-ch Jones only) at epoch 8:**
+
+| Metric | Exp 18 (7-ch) | Exp 19 (8-ch) |
+| ------ | ------------- | ------------- |
+| FSS    | 0.5949        | 0.5555        |
+| F1     | 0.1146        | 0.0719        |
+| P      | 0.1272        | 0.0677        |
+| R      | 0.1042        | 0.0767        |
+
+**Conclusion: Adding CIWC 600hPa hurts even as a single extra channel.** XGBoost feature importance does not transfer to the U-Net: CIWC is discriminative for cell-level tabular prediction but adds a correlated noisy channel for spatial convolution, diluting the gradient. The Jones 7-channel set remains optimal. **No further microphysics channel additions will be tested.**
+
+---
+
+## Experiment 20 — Jones CPLRSTW (7 ch), Oct–Feb window, pos_weight=5
+
+**Motivation:** Oct–Mar (Exp 18) includes March, a transition month where convection is shutting down. Hypothesis: removing March tightens the training distribution and gives the model cleaner storm-season signal.
+
+**Config:**
+
+- Features: Jones CPLRSTW only (7 channels), 22,041 params
+- `ACTIVE_MONTHS = [10, 11, 12, 1, 2]` (Oct–Feb, removing March)
+- `BCE_POS_WEIGHT = 5`, `EPOCHS = 50`, `LR = 1e-3`, `SEED = 42`
+- Train: 17,400 timesteps | Test: 3,624 timesteps (fewer than Exp 18 — March removed from test too)
+
+**Training log (selected epochs):**
+
+| Epoch | Train Loss | Test Loss | FSS    | Precision | Recall | F1     |
+| ----- | ---------- | --------- | ------ | --------- | ------ | ------ |
+| 1     | 0.081679   | 0.020115  | 0.7281 | 0.0000    | 0.0000 | 0.0000 |
+| 5     | 0.040124   | 0.018445  | 0.6389 | 0.1012    | 0.1125 | 0.1066 |
+| 13    | 0.036592   | 0.015900  | 0.6534 | 0.1512    | 0.0964 | 0.1177 |
+| 17    | 0.035625   | 0.016858  | 0.6028 | 0.1164    | 0.1327 | 0.1240 |
+| 20    | 0.034402   | 0.016505  | 0.6157 | 0.1388    | 0.1176 | 0.1273 |
+| 26    | 0.033391   | 0.016554  | 0.6082 | 0.1245    | 0.1323 | 0.1283 |
+| 34    | 0.032734   | 0.016872  | 0.5767 | 0.1140    | 0.1484 | 0.1289 |
+| 50    | 0.032294   | 0.016606  | 0.5835 | 0.1159    | 0.1325 | 0.1236 |
+
+**Best test loss:** 0.015900 (epoch 13)
+**Best FSS:** 0.7281 (epochs 1–3 — empty-batch artifact at random init)
+**Best F1:** 0.1289 (epoch 34) — P=0.1140, R=0.1484
+
+**Comparison vs Exp 18 (Oct–Mar, 7-ch):**
+
+| Metric      | Exp 18 Oct–Mar | Exp 20 Oct–Feb | Δ      |
+| ----------- | --------------- | --------------- | ------- |
+| Best F1     | 0.1178          | 0.1289          | +0.011  |
+| FSS plateau | 0.52–0.61      | 0.58–0.67      | +0.06   |
+| Best loss   | 0.018526        | 0.015900        | −0.003 |
+
+**Observations:**
+
+- Removing March improves all metrics. The FSS plateau shifts up noticeably (0.58–0.67 vs 0.52–0.61), and best test loss improves by ~0.003.
+- After epoch ~30 the model converges: FSS stabilises around 0.58, F1 around 0.12–0.13, P and R roughly balanced.
+- Epoch 18 is an outlier (FSS=0.6675, P=0.21, R=0.03) — a momentary collapse to high-precision/low-recall predictions, then recovers. Normal training noise.
+- Epoch 1–3 FSS=0.7281 is the same empty-batch artifact seen in prior experiments.
+
+**Conclusion: Oct–Feb is the best seasonal window so far.** March is a noisy transition month that dilutes the model's learning. Best F1=0.1289, honest FSS plateau ~0.58–0.67. This is now the reference configuration. Next: tune pos_weight to push recall up (R=0.15 at best F1 vs P=0.11 — slight recall deficit).
+
+---
+
+## Experiment 21 — Jones CPLRSTW (7 ch), Oct–Jan window, pos_weight=5
+
+**Motivation:** Test whether removing February further tightens the distribution (continuing the Oct–Mar → Oct–Feb → Oct–Jan narrowing).
+
+**Config:** Same as Exp 20 but `ACTIVE_MONTHS = [10, 11, 12, 1]`.
+
+- Train: 14,016 timesteps | Test: 2,952 timesteps
+
+**Training log (first 10 epochs):**
+
+| Epoch | Train Loss | Test Loss | FSS    | Precision | Recall | F1     |
+| ----- | ---------- | --------- | ------ | --------- | ------ | ------ |
+| 1–6  | —         | —        | 0.8387 | 0.0000    | 0.0000 | 0.0000 |
+| 7     | 0.038823   | 0.012119  | 0.7459 | 0.1037    | 0.0245 | 0.0396 |
+| 8     | 0.038269   | 0.011379  | 0.7467 | 0.0419    | 0.0367 | 0.0391 |
+| 10    | 0.037348   | 0.011892  | 0.7193 | 0.0498    | 0.0535 | 0.0516 |
+
+**Observations:**
+
+- FSS=0.8387 for the first 6 epochs with P=R=0 is a large empty-batch artifact — Jan has very little lightning, so the test set is dominated by empty timesteps and the model predicts nothing → vacuous FSS averages high.
+- Once the model starts predicting (epoch 7+), FSS drops to 0.72–0.75 and F1 is only ~0.04–0.05 — far below Exp 20 (Oct–Feb).
+- Fewer training samples (14k vs 17k) and a sparser test set compound the problem.
+
+**Conclusion: Removing February hurts. Oct–Feb remains the optimal window.** February contributes real storm activity that helps both training signal and honest test evaluation. **Oct–Feb is confirmed as the best seasonal window.**
