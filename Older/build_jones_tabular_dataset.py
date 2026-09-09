@@ -25,6 +25,7 @@ import pandas as pd
 import xarray as xr
 import pyarrow as pa
 import pyarrow.parquet as pq
+import os
 
 CHUNK_SIZE = 100   # timesteps per chunk
 

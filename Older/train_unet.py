@@ -44,47 +44,12 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-FEATURE_COLS = [
-    # Jones et al. CPLRSTW (7) — from combined_tabular_dataset_{year}.parquet
-    'cape',            # C — convective available potential energy
-    'precipitation',   # P — IMERG hourly precipitation
-    'land_sea_mask',   # L
-    'rh_avg',          # R — mean relative humidity (500 & 1000 hPa)
-    'wind_shear',      # S — deep-layer wind shear (500–1000 hPa)
-    '2m_temperature',  # T
-    'wcd',             # W — warm cloud depth (ZDL − CBH)
-    # # Exp 7b top-6 microphysical features (excl. cape = already above)
-    # 'specific_cloud_ice_water_content_600hPa',   # rank 1 (gain 0.531)
-    # 'specific_cloud_ice_water_content_550hPa',   # rank 2 (gain 0.150)
-    # 'specific_cloud_ice_water_content_650hPa',   # rank 3 (gain 0.039)
-    # 'total_totals_index',                         # rank 4 (gain 0.026)
-    # 'specific_cloud_ice_water_content_500hPa',   # rank 5 (gain 0.023)
-    # 'specific_cloud_liquid_water_content_700hPa', # rank 6 (gain 0.022)
-]
 
-# FEATURE_COLS = [
-#     # Top-20 XGBoost feature importance (Exp 12)
-#     'specific_cloud_ice_water_content_600hPa',      # rank  1 (0.428)
-#     'specific_cloud_ice_water_content_550hPa',      # rank  2 (0.130)
-#     'specific_cloud_ice_water_content_650hPa',      # rank  3 (0.055)
-#     'total_totals_index',                            # rank  4 (0.034)
-#     'specific_cloud_ice_water_content_500hPa',      # rank  5 (0.013)
-#     'specific_cloud_liquid_water_content_700hPa',   # rank  6 (0.013)
-#     'convective_available_potential_energy',         # rank  7 (0.013)
-#     'total_column_cloud_ice_water',                  # rank  8 (0.012)
-#     'total_column_cloud_liquid_water',               # rank  9 (0.009)
-#     'specific_cloud_liquid_water_content_775hPa',   # rank 10 (0.007)
-#     'specific_cloud_liquid_water_content_750hPa',   # rank 11 (0.007)
-#     'specific_cloud_liquid_water_content_850hPa',   # rank 12 (0.005)
-#     'specific_cloud_liquid_water_content_825hPa',   # rank 13 (0.005)
-#     'proxy_lpi',                                     # rank 14 (0.004)
-#     'vertical_velocity_850hPa',                      # rank 15 (0.004)
-#     'specific_cloud_ice_water_content_400hPa',      # rank 16 (0.004)
-#     'k_index',                                       # rank 17 (0.004)
-#     'temperature_250hPa',                            # rank 18 (0.003)
-#     'temperature_225hPa',                            # rank 19 (0.003)
-#     'specific_cloud_ice_water_content_450hPa',      # rank 20 (0.003)
-# ]
+FEATURE_COLS = [
+    'cape', 'precipitation', 'land_sea_mask', 'rh_avg',
+    'wind_shear', '2m_temperature', 'wcd',
+    # 'vertical_velocity_500hPa',
+]
 
 # No aux parquets needed — CIWC already baked into jones_ciwc_tabular_dataset files
 AUX_TRAIN_PARQUETS = None
@@ -97,26 +62,15 @@ GRID_H = None
 GRID_W = None
 
 TRAIN_PARQUETS = [
-    'data/combined_tabular_dataset_2004.parquet',
-    'data/combined_tabular_dataset_2005.parquet',
-    'data/combined_tabular_dataset_2006.parquet',
-    'data/combined_tabular_dataset_2008.parquet',
-    'data/combined_tabular_dataset_2009.parquet',
-    'data/combined_tabular_dataset_2023.parquet',
-    'data/combined_tabular_dataset_2024.parquet',
+    'data/jones_tabular_dataset_2004.parquet',
+    'data/jones_tabular_dataset_2005.parquet',
+    'data/jones_tabular_dataset_2006.parquet',
+    'data/jones_tabular_dataset_2008.parquet',
+    'data/jones_tabular_dataset_2009.parquet',
+    'data/jones_tabular_dataset_2023.parquet',
+    'data/jones_tabular_dataset_2024.parquet',
 ]
-TEST_PARQUET = 'data/combined_tabular_dataset_2025.parquet'
-
-# TRAIN_PARQUETS = [
-#     'data/tabular_dataset_2004.parquet',
-#     'data/tabular_dataset_2005.parquet',
-#     'data/tabular_dataset_2006.parquet',
-#     'data/tabular_dataset_2008.parquet',
-#     'data/tabular_dataset_2009.parquet',
-#     'data/tabular_dataset_2023.parquet',
-#     'data/tabular_dataset_2024.parquet',
-# ]
-# TEST_PARQUET = 'data/tabular_dataset_2025.parquet'
+TEST_PARQUET = 'data/jones_tabular_dataset_2025.parquet'
 
 BATCH_SIZE  = 32
 EPOCHS      = 50
