@@ -5,20 +5,20 @@ import gcsfs
 from datetime import datetime
 import pandas as pd
 
-LAT_MIN, LAT_MAX = 27.296, 36.598
-LON_MIN, LON_MAX = 27.954, 39.292
+LAT_MIN, LAT_MAX = 30.970, 43.435
+LON_MIN, LON_MAX = -9.142, 39.292
 
 PRESSURE_LEVELS = [500, 1000]  # hPa — Jones et al. use 500 & 1000 hPa for wind/RH
 
 # single-level variables (2D: lat × lon, no pressure dimension)
 SINGLE_LEVEL_VARS = [
     # ── Original thesis variables ──────────────────────────────────────────────
-    # 'convective_available_potential_energy',
-    # 'k_index',
-    # 'total_totals_index',
-    # 'total_column_cloud_ice_water',
-    # 'total_column_cloud_liquid_water',
-    # 'surface_pressure',
+    'convective_available_potential_energy',
+    'k_index',
+    'total_totals_index',
+    'total_column_cloud_ice_water',
+    'total_column_cloud_liquid_water',
+    'surface_pressure',
 
     # ── Jones et al. (2025) CPLRSTW single-level variables ────────────────────
     '2m_temperature',        # T2M
@@ -30,12 +30,12 @@ SINGLE_LEVEL_VARS = [
 # pressure-level variables (3D: pressure × lat × lon)
 PRESSURE_LEVEL_VARS = [
     # ── Original thesis variables ──────────────────────────────────────────────
-    # 'temperature',
-    # 'specific_humidity',
-    # 'vertical_velocity',
-    # 'geopotential',
-    # 'specific_cloud_ice_water_content',
-    # 'specific_cloud_liquid_water_content',
+    'temperature',
+    'specific_humidity',
+    'vertical_velocity',
+    'geopotential',
+    'specific_cloud_ice_water_content',
+    'specific_cloud_liquid_water_content',
 
     # ── Jones et al. (2025) CPLRSTW pressure-level variables ──────────────────
     'u_component_of_wind',   # u at 500 & 1000 hPa — used to derive SHEAR
@@ -142,11 +142,16 @@ def download_era5(time_range, out_dir='data'):
 
 if __name__ == "__main__":
     TIME_RANGES = [
-        # slice('2004-09-01', '2004-12-31'),
-        # slice('2005-01-01', '2005-11-30'),
-        slice('2006-01-01', '2006-08-31'),
-        slice('2008-09-01', '2008-12-31'),
-        slice('2009-01-01', '2009-09-30'),
+        # slice('2013-01-01', '2013-12-31'),
+        # slice('2014-01-01', '2014-12-31'),
+        # slice('2015-01-01', '2015-12-31'),
+        # slice('2016-01-01', '2016-12-31'),
+        # slice('2017-01-01', '2017-12-31'),
+        # slice('2018-01-01', '2018-12-31'),
+        # slice('2019-01-01', '2019-12-31'),
+        # slice('2020-01-01', '2020-12-31'),
+        slice('2021-01-01', '2021-12-31'),
+        slice('2022-01-01', '2022-12-31'),
         slice('2023-01-01', '2023-12-31'),
         slice('2024-01-01', '2024-12-31'),
         slice('2025-01-01', '2025-12-31'),

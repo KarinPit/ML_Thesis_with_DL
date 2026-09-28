@@ -31,8 +31,8 @@ from scipy.interpolate import RegularGridInterpolator
 import earthaccess
 
 # ── Domain (match ERA5 grid exactly) ──────────────────────────────────────────
-LAT_MIN, LAT_MAX = 27.296, 36.598
-LON_MIN, LON_MAX = 27.954, 39.292
+LAT_MIN, LAT_MAX = 30.970, 43.435
+LON_MIN, LON_MAX = -9.142, 39.292
 
 # ERA5 0.25° target grid for this domain
 ERA5_LATS = np.arange(np.ceil(LAT_MIN * 4) / 4, LAT_MAX + 0.001, 0.25)
@@ -200,11 +200,16 @@ if __name__ == "__main__":
 
     # All time ranges to download (matches your lightning data years)
     TIME_RANGES = [
-        slice('2004-09-01', '2004-12-31'),
-        slice('2005-01-01', '2005-11-30'),
-        slice('2006-01-01', '2006-08-31'),
-        slice('2008-09-01', '2008-12-31'),
-        slice('2009-01-01', '2009-09-30'),
+        slice('2013-01-01', '2013-12-31'),
+        slice('2014-01-01', '2014-12-31'),
+        slice('2015-01-01', '2015-12-31'),
+        slice('2016-01-01', '2016-12-31'),
+        slice('2017-01-01', '2017-12-31'),
+        slice('2018-01-01', '2018-12-31'),
+        slice('2019-01-01', '2019-12-31'),
+        slice('2020-01-01', '2020-12-31'),
+        slice('2021-01-01', '2021-12-31'),
+        slice('2022-01-01', '2022-12-31'),
         slice('2023-01-01', '2023-12-31'),
         slice('2024-01-01', '2024-12-31'),
         slice('2025-01-01', '2025-12-31'),
