@@ -1,226 +1,317 @@
-"""
-train_unet.py
--------------
-Trains a U-Net (SimpleCNN) on Jones et al. CPLRSTW features to predict
-hourly lightning counts over Israel / Eastern Mediterranean.
-
-Input:  data/jones_israel_*.nc   (one file per year)
-Output: models/unet_jones.pt     (best checkpoint)
-        models/unet_jones_last.pt (final epoch)
-"""
-
-import os
-import numpy as np
 import xarray as xr
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+import scipy.stats as stats
+import netCDF4
+from sklearn.metrics import r2_score
+from sklearn.model_selection import train_test_split
+
+import sys
+import random
+import os
+import xarray as xr
+import numpy as np
+import numpy.ma as ma
+import pandas as pd
+import math
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+import matplotlib.patches as patches
+import matplotlib.ticker as ticker
+from matplotlib.path import Path
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from eofs.xarray import Eof
+import time
+import h5py
+from scipy.signal import correlation_lags
+from scipy.stats import pearsonr
+from scipy.stats import linregress
+from datetime import datetime
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
-
-# ── Config ─────────────────────────────────────────────────────────────────────
-DATA_PATTERN = 'data/jones_israel_*.nc'
-MODEL_DIR    = 'models'
-
-FEATURE_VARS = ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd', 'vertical_velocity_500hPa']
-TARGET_VAR   = 'ltg'
-
-BATCH_SIZE   = 64
-EPOCHS       = 50
-LR           = 0.005
-PATIENCE     = 5
-NUM_WORKERS  = 0      # 0 = main process only (safest with large in-RAM tensors)
-SEED         = 13
-
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+from torchvision import datasets, transforms
+import gc
 
 
-# ── Model ──────────────────────────────────────────────────────────────────────
+# os.chdir('/home/ec2-user/ML_Thesis_with_DL/Jones_Replicated/Lightning-CNN-main/data/input_data')
+os.chdir('/home/ec2-user/ML_Thesis_with_DL/data')
+
+ds_hourly = xr.open_dataset('jones_israel_all_years.nc')
+# Trim to dimensions divisible by 4
+n_lat = (ds_hourly.sizes['lat'] // 4) * 4
+n_lon = (ds_hourly.sizes['lon'] // 4) * 4
+
+ds_hourly = ds_hourly.isel(lat=slice(0, n_lat), lon=slice(0, n_lon))
+print(f"Grid trimmed to: {n_lat} × {n_lon}", flush=True)
+
+# ── Resample to 12-hourly ───────────────────────────────────────────────────────
+# ERA5 features: average over each 12h window
+# ltg (stroke counts): sum over each 12h window (counts accumulate)
+# lsm is constant in time — mean is fine
+print("Resampling to 12-hourly...", flush=True)
+feature_name = ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd']
+output_name  = ['ltg']
+
+ds_feat = ds_hourly[feature_name].resample(time='12h').mean()
+ds_ltg  = ds_hourly[output_name].resample(time='12h').sum()
+ds_daily = xr.merge([ds_feat, ds_ltg])
+print(f"After resampling: {ds_daily.sizes['time']} 12-hourly timesteps", flush=True)
+
+dataset_cnn = ds_daily
+
+# ── Temporal split: 2024-2025 = test, 2013-2023 = train+val ────────────────────
+all_times  = ds_daily.time.values
+test_mask  = all_times >= np.datetime64('2024-01-01')
+idx_test   = np.where(test_mask)[0]
+idx_tv     = np.where(~test_mask)[0]
+idx_train, idx_val = train_test_split(idx_tv, test_size=0.25, random_state=13)
+
+zdim = len(feature_name)
+
+seed = 13
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+
+print(f"Splits — train: {len(idx_train)}, val: {len(idx_val)}, test: {len(idx_test)}", flush=True)
+print(f"Test period: {pd.Timestamp(all_times[idx_test[0]]).date()} → {pd.Timestamp(all_times[idx_test[-1]]).date()}", flush=True)
+
+# Define the PyTorch model
 class SimpleCNN(nn.Module):
-    def __init__(self, in_channels):
-        super().__init__()
-        self.encoder0 = self._enc(in_channels, 32)
-        self.encoder1 = self._enc(32, 16)
-        self.center   = self._conv(16, 8)
-        self.decoder1 = self._dec(8, 16)
-        self.decoder0 = self._dec(16, 32)
-        self.out      = nn.Conv2d(32, 1, kernel_size=1)
+    def __init__(self, zdim, ydim, xdim):
+        super(SimpleCNN, self).__init__()
+        self.encoder0 = self.encoder_block(zdim, 32)
+        self.encoder1 = self.encoder_block(32, 16)
+        self.center = self.conv_block(16, 8)
+        self.decoder1 = self.decoder_block(8, 16)
+        self.decoder0 = self.decoder_block(16, 32)
+        self.outputs = nn.Sequential(
+            nn.Conv2d(32, 1, kernel_size=1, padding=0),
+#            nn.ReLU()  # Ensures non-negative output
+        )
 
-    def _conv(self, c_in, c_out):
-        return nn.Sequential(nn.Conv2d(c_in, c_out, 3, padding=1), nn.ReLU(inplace=True))
-
-    def _enc(self, c_in, c_out):
-        return nn.Sequential(self._conv(c_in, c_out), nn.MaxPool2d(2))
-
-    def _dec(self, c_in, c_out):
+    def conv_block(self, in_channels, out_channels):
         return nn.Sequential(
-            nn.ConvTranspose2d(c_in, c_out, 2, stride=2), nn.ReLU(inplace=True),
-            nn.Conv2d(c_out, c_out, 3, padding=1),        nn.ReLU(inplace=True)
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+
+    def encoder_block(self, in_channels, out_channels):
+        return nn.Sequential(
+            self.conv_block(in_channels, out_channels),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
+
+    def decoder_block(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
-        e0 = self.encoder0(x)
-        e1 = self.encoder1(e0)
-        c  = self.center(e1)
-        d1 = self.decoder1(c)
-        d0 = self.decoder0(d1)
-        return self.out(d0)
+        encoder0 = self.encoder0(x)
+        encoder1 = self.encoder1(encoder0)
+        center = self.center(encoder1)
+        decoder1 = self.decoder1(center)
+        decoder0 = self.decoder0(decoder1)
+        outputs = self.outputs(decoder0)
+        return outputs
 
+# Initialize model, loss function, and optimizer
+zdim_m, ydim_m, xdim_m = 7, 104, 148  # Adjust these based on your data
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+model = SimpleCNN(zdim_m, ydim_m, xdim_m).to(DEVICE)
+criterion = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr=0.005)
 
-def load_split_to_ram(ds, time_slice, feat_mean, feat_std, tgt_mean, tgt_std, label=''):
-    """Normalise and load a contiguous time slice into RAM as float32 numpy arrays."""
-    print(f"  Loading {label} into RAM...", flush=True)
-    sub = ds.isel(time=time_slice)
+# ── Helper: group global time indices by year (for sequential disk reads) ──────
+def group_by_year(indices, all_times):
+    """Returns sorted dict: year_str -> sorted array of global indices."""
+    from collections import defaultdict
+    year_map = defaultdict(list)
+    for i in indices:
+        yr = str(all_times[i].astype('datetime64[Y]'))
+        year_map[yr].append(i)
+    return {yr: np.sort(np.array(idxs)) for yr, idxs in sorted(year_map.items())}
 
-    # Normalise features
-    X_norm = ((sub[FEATURE_VARS].groupby('time.month') - feat_mean
-               ).groupby('time.month') / feat_std).fillna(0)
-    # Store as float16 to halve RAM usage; cast to float32 on GPU in training loop
-    X = np.stack([X_norm[v].values for v in FEATURE_VARS], axis=1).astype('float16')
+all_times     = ds_daily.time.values
+train_by_year = group_by_year(idx_train, all_times)
+val_by_year   = group_by_year(idx_val,   all_times)
+test_by_year  = group_by_year(idx_test,  all_times)
 
-    # Normalise target
-    y_norm = ((sub[TARGET_VAR].groupby('time.month') - tgt_mean
-               ).groupby('time.month') / tgt_std).fillna(0)
-    y = y_norm.values[:, np.newaxis, :, :].astype('float16')
+# ── Compute train normalisation stats incrementally (year-by-year) ─────────────
+# Jones normalises per (month, variable) with mean/std over (time, lat, lon).
+# We reproduce this exactly using running sums so we never load all train at once.
+n_months = 12
+n_X_vars = len(feature_name)
+n_y_vars = len(output_name)
 
-    print(f"  {label}: X={X.shape}  y={y.shape}  "
-          f"RAM used: {X.nbytes/1e9:.1f}GB + {y.nbytes/1e9:.1f}GB", flush=True)
-    return X, y
+X_sum    = np.zeros((n_months, n_X_vars), dtype=np.float64)
+X_sum_sq = np.zeros((n_months, n_X_vars), dtype=np.float64)
+X_count  = np.zeros((n_months, n_X_vars), dtype=np.float64)
+y_sum    = np.zeros((n_months, n_y_vars), dtype=np.float64)
+y_sum_sq = np.zeros((n_months, n_y_vars), dtype=np.float64)
+y_count  = np.zeros((n_months, n_y_vars), dtype=np.float64)
 
+print("Computing train stats (year-by-year to save RAM)...", flush=True)
+for yr, yr_indices in train_by_year.items():
+    print(f"  Stats {yr}: {len(yr_indices)} timesteps", flush=True)
+    sub_X = dataset_cnn[feature_name].isel(time=yr_indices).load()
+    sub_y = dataset_cnn[output_name].isel(time=yr_indices).load()
+    months_arr = sub_X.time.dt.month.values  # shape (T,)
 
-def main():
-    torch.manual_seed(SEED)
-    np.random.seed(SEED)
-    print(f"Using device: {DEVICE}", flush=True)
-    os.makedirs(MODEL_DIR, exist_ok=True)
+    for m_idx in range(1, 13):
+        mask = (months_arr == m_idx)
+        if not mask.any():
+            continue
+        for vi, vname in enumerate(feature_name):
+            v = sub_X[vname].values[mask].astype(np.float64)   # (T_m, lat, lon)
+            v_fin = v[np.isfinite(v)]
+            X_sum[m_idx-1, vi]    += v_fin.sum()
+            X_sum_sq[m_idx-1, vi] += (v_fin**2).sum()
+            X_count[m_idx-1, vi]  += len(v_fin)
+        for vi, vname in enumerate(output_name):
+            v = sub_y[vname].values[mask].astype(np.float64)
+            v_fin = v[np.isfinite(v)]
+            y_sum[m_idx-1, vi]    += v_fin.sum()
+            y_sum_sq[m_idx-1, vi] += (v_fin**2).sum()
+            y_count[m_idx-1, vi]  += len(v_fin)
 
-    # ── Open all years lazily ──────────────────────────────────────────────────
-    print("Opening dataset...", flush=True)
-    ds = xr.open_mfdataset(DATA_PATTERN, combine='by_coords', chunks={'time': 200})
+    del sub_X, sub_y; gc.collect()
 
-    n_lat = (ds.sizes['lat'] // 4) * 4
-    n_lon = (ds.sizes['lon'] // 4) * 4
-    ds = ds.isel(lat=slice(0, n_lat), lon=slice(0, n_lon))
-    print(f"Grid: {n_lat} lat × {n_lon} lon, total timesteps: {ds.sizes['time']}", flush=True)
+# Final mean/std per (month, variable): shape (12, n_vars)
+X_mean = X_sum    / X_count
+X_std  = np.sqrt(np.maximum(X_sum_sq / X_count - X_mean**2, 1e-12))
+y_mean = y_sum    / y_count
+y_std  = np.sqrt(np.maximum(y_sum_sq / y_count - y_mean**2, 1e-12))
 
-    # ── Contiguous splits ──────────────────────────────────────────────────────
-    n_times = ds.sizes['time']
-    n_train   = int(n_times * 0.6)
-    n_val     = int(n_times * 0.2)
-    sl_tr     = slice(0, n_train)
-    val_start = n_train
-    val_stop  = n_train + n_val
-    sl_val    = slice(val_start, val_stop)
-    te_start  = val_stop
-    sl_te     = slice(te_start, n_times)
-    print(f"Splits — train: {n_train}, val: {n_val}, test: {n_times - n_train - n_val}", flush=True)
+print("Train stats done.", flush=True)
 
-    # ── Normalisation stats (fit on train only) ────────────────────────────────
-    print("Computing normalisation stats...", flush=True)
-    ds_tr      = ds.isel(time=sl_tr)
-    feat_mean  = ds_tr[FEATURE_VARS].groupby('time.month').mean(dim=['time','lat','lon']).compute()
-    feat_std   = ds_tr[FEATURE_VARS].groupby('time.month').std(dim=['time','lat','lon']).compute()
-    tgt_mean   = ds_tr[TARGET_VAR].groupby('time.month').mean(dim=['time','lat','lon']).compute()
-    tgt_std    = ds_tr[TARGET_VAR].groupby('time.month').std(dim=['time','lat','lon']).compute()
-    print("Stats done.", flush=True)
+# ── Load, normalise, and convert a split to tensors year-by-year ───────────────
+def norm_to_tensor(by_year_dict, label):
+    """Normalise and convert to float32 tensors, one year at a time."""
+    print(f"\nNormalising + converting {label}...", flush=True)
+    X_parts, y_parts = [], []
+    for yr, yr_indices in by_year_dict.items():
+        print(f"  {yr}: {len(yr_indices)} timesteps", flush=True)
+        sub_X = dataset_cnn[feature_name].isel(time=yr_indices).load()
+        sub_y = dataset_cnn[output_name].isel(time=yr_indices).load()
+        months_arr = sub_X.time.dt.month.values  # (T,)
+        T = len(months_arr)
 
-    # ── Load ONLY train into RAM; val + test streamed in chunks ───────────────
-    X_tr, y_tr = load_split_to_ram(ds, sl_tr, feat_mean, feat_std, tgt_mean, tgt_std, 'train')
+        # Stack features: (T, lat, lon, n_X_vars)
+        X_arr = np.stack([sub_X[v].values for v in feature_name], axis=-1).astype(np.float32)
+        y_arr = np.stack([sub_y[v].values for v in output_name], axis=-1).astype(np.float32)
+        del sub_X, sub_y
 
-    train_loader = DataLoader(TensorDataset(torch.from_numpy(X_tr), torch.from_numpy(y_tr)),
-                              batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS,
-                              pin_memory=(DEVICE == 'cuda'))
+        # Apply per-month normalisation
+        for t in range(T):
+            m = months_arr[t] - 1  # 0-indexed
+            X_arr[t] = ((X_arr[t].astype(np.float64) - X_mean[m]) / X_std[m]).astype(np.float32)
+            y_arr[t] = ((y_arr[t].astype(np.float64) - y_mean[m]) / y_std[m]).astype(np.float32)
 
-    # ── Model ──────────────────────────────────────────────────────────────────
-    model     = SimpleCNN(in_channels=len(FEATURE_VARS)).to(DEVICE)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=LR)
+        np.nan_to_num(X_arr, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+        np.nan_to_num(y_arr, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
 
-    n_train_batches = len(train_loader)
+        # (T, lat, lon, C) → (T, C, lat, lon)
+        X_parts.append(torch.tensor(X_arr.transpose(0, 3, 1, 2)))
+        y_parts.append(torch.tensor(y_arr.transpose(0, 3, 1, 2)))
+        del X_arr, y_arr; gc.collect()
 
-    # ── Training loop ──────────────────────────────────────────────────────────
-    best_val_loss    = float('inf')
-    patience_counter = 0
+    return torch.cat(X_parts, dim=0), torch.cat(y_parts, dim=0)
 
-    print("\nTraining...", flush=True)
-    for epoch in range(1, EPOCHS + 1):
+tr_X_tensor,   tr_y_tensor   = norm_to_tensor(train_by_year, 'train')
+val_X_tensor,  val_y_tensor  = norm_to_tensor(val_by_year,   'val')
+test_X_tensor, test_y_tensor = norm_to_tensor(test_by_year,  'test')
 
-        # Train
-        model.train()
-        tr_loss = 0.0
-        for batch_idx, (X, y) in enumerate(train_loader, 1):
-            X, y = X.to(DEVICE, dtype=torch.float32), y.to(DEVICE, dtype=torch.float32)
+# Collect the sorted test times (used for saving predictions)
+test_times_sorted = np.concatenate(
+    [all_times[idxs] for yr, idxs in test_by_year.items()]
+)
+
+print("\nTensors ready. Starting training...", flush=True)
+
+def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, val_targets, batch_size=128, epochs=50, patience=5):
+    model.train()
+    dataset_size = len(train_inputs)
+    val_size = len(val_inputs)
+
+    best_val_loss = float('inf')
+    patience_counter = 5
+
+    for epoch in range(epochs):
+        permutation = torch.randperm(dataset_size)
+        for i in range(0, dataset_size, batch_size):
+            indices = permutation[i:i + batch_size]
+            batch_inputs, batch_targets = train_inputs[indices], train_targets[indices]
+
             optimizer.zero_grad()
-            loss = criterion(model(X), y)
+            outputs = model(batch_inputs.to(DEVICE))
+            loss = criterion(outputs, batch_targets.to(DEVICE))
             loss.backward()
             optimizer.step()
-            tr_loss += loss.item()
-            if batch_idx % 200 == 0 or batch_idx == n_train_batches:
-                print(f"  Epoch {epoch:3d}  batch {batch_idx:4d}/{n_train_batches}  "
-                      f"train_loss={tr_loss/batch_idx:.5f}", flush=True)
-        tr_loss /= n_train_batches
 
-        # Validate (streamed in chunks to save RAM)
+        # Validation phase
         model.eval()
-        val_loss, val_batches = 0.0, 0
-        CHUNK = 500
+        val_loss = 0
         with torch.no_grad():
-            for start in range(val_start, val_stop, CHUNK):
-                end = min(start + CHUNK, sl_val.stop)
-                X_c, y_c = load_split_to_ram(ds, slice(start, end),
-                                             feat_mean, feat_std, tgt_mean, tgt_std, '')
-                loader_c = DataLoader(TensorDataset(torch.from_numpy(X_c), torch.from_numpy(y_c)),
-                                      batch_size=BATCH_SIZE, shuffle=False)
-                for X, y in loader_c:
-                    val_loss += criterion(model(X.to(DEVICE, dtype=torch.float32)), y.to(DEVICE, dtype=torch.float32)).item()
-                    val_batches += 1
-                del X_c, y_c
-        val_loss /= max(val_batches, 1)
+            for i in range(0, val_size, batch_size):
+                val_batch_inputs = val_inputs[i:i + batch_size]
+                val_batch_targets = val_targets[i:i + batch_size]
+                val_outputs = model(val_batch_inputs.to(DEVICE))
+                val_loss += criterion(val_outputs, val_batch_targets.to(DEVICE)).item()
 
-        print(f"Epoch {epoch:3d}/{EPOCHS}  train={tr_loss:.5f}  val={val_loss:.5f}", flush=True)
+        val_loss /= max(1, val_size // batch_size)
+        print(f'Epoch {epoch+1}/{epochs}, Training Loss: {loss.item():.6f}, Validation Loss: {val_loss:.6f}', flush=True)
 
-        if val_loss < best_val_loss:
-            best_val_loss    = val_loss
-            patience_counter = 0
-            torch.save(model.state_dict(), os.path.join(MODEL_DIR, 'unet_jones.pt'))
-            print(f"  ✓ best model saved (val={val_loss:.5f})", flush=True)
-        else:
-            patience_counter += 1
-            print(f"  patience {patience_counter}/{PATIENCE}", flush=True)
-            if patience_counter >= PATIENCE:
-                print(f"  Early stop at epoch {epoch}", flush=True)
-                break
+train(model, criterion, optimizer, tr_X_tensor, tr_y_tensor, val_X_tensor, val_y_tensor)
 
-    torch.save(model.state_dict(), os.path.join(MODEL_DIR, 'unet_jones_last.pt'))
+print("Training done. Running inference on test set...", flush=True)
+model.eval()
 
-    # ── Test evaluation (lazy, no RAM spike) ───────────────────────────────────
-    print("\nEvaluating on test set (streaming from disk)...", flush=True)
-    model.load_state_dict(torch.load(os.path.join(MODEL_DIR, 'unet_jones.pt'), map_location=DEVICE))
-    model.eval()
+with torch.no_grad():
+    pred_parts = []
+    for i in range(0, len(test_X_tensor), 128):
+        pred_parts.append(model(test_X_tensor[i:i+128].to(DEVICE)).cpu())
+    predictions_norm = torch.cat(pred_parts, dim=0)
 
-    all_preds, all_true = [], []
-    CHUNK = 500
-    for start in range(te_start, n_times, CHUNK):
-        end = min(start + CHUNK, n_times)
-        X_chunk, y_chunk = load_split_to_ram(ds, slice(start, end),
-                                             feat_mean, feat_std, tgt_mean, tgt_std,
-                                             f'test chunk {start}-{end}')
-        with torch.no_grad():
-            preds = model(torch.from_numpy(X_chunk).to(DEVICE)).cpu().numpy().squeeze(1)
-        all_preds.append(preds)
-        all_true.append(y_chunk.squeeze(1))
+# Convert predictions to numpy array
+predictions_norm_np = predictions_norm.numpy()
+predictions_norm_np = predictions_norm_np.squeeze(1)
 
-    preds_np = np.concatenate(all_preds, axis=0)
-    true_np  = np.concatenate(all_true,  axis=0)
-    mask = np.isfinite(true_np) & np.isfinite(preds_np)
-    ss   = 1 - np.mean((preds_np[mask] - true_np[mask])**2) / np.var(true_np[mask])
-    print(f"Test skill score (1 - MSE/Var): {ss:.4f}", flush=True)
+# Unnormalise predictions using train stats
+# Match Jones: re-standardise predictions then apply train month std/mean
+# Jones: re-normalize pred to z-score, then multiply by train_y std, add train_y mean
+pred_mean = predictions_norm_np.mean()
+pred_std  = predictions_norm_np.std()
+pred_z    = (predictions_norm_np - pred_mean) / (pred_std + 1e-12)  # (T, lat, lon)
 
-    times_test = ds.isel(time=sl_te).time.values
-    xr.DataArray(preds_np, dims=['time','lat','lon'],
-                 coords={'time': times_test, 'lat': ds.lat.values, 'lon': ds.lon.values}
-                 ).to_dataset(name='ltg').to_netcdf('data/unet_jones_predictions.nc')
-    print("Predictions saved → data/unet_jones_predictions.nc", flush=True)
+T_test = len(test_times_sorted)
+predictions_unnorm_np = np.zeros_like(pred_z, dtype=np.float32)
+for t in range(T_test):
+    m = int(pd.Timestamp(test_times_sorted[t]).month) - 1  # 0-indexed
+    # y_std and y_mean are shape (12, 1); pick month m, variable 0
+    predictions_unnorm_np[t] = pred_z[t] * y_std[m, 0] + y_mean[m, 0]
 
+predictions_unnorm_np = np.maximum(predictions_unnorm_np, 0)
 
-if __name__ == '__main__':
-    main()
+# ── Save predictions ────────────────────────────────────────────────────────────
+dims   = ['time', 'lat', 'lon']
+coords = {
+    'time': test_times_sorted,
+    'lat':  ds_daily.lat.values[:n_lat],
+    'lon':  ds_daily.lon.values[:n_lon],
+}
+predictions_unnorm_da = xr.DataArray(predictions_unnorm_np, dims=dims, coords=coords)
+predictions_unnorm_ds = predictions_unnorm_da.to_dataset(name='ltg')
+
+print("Saving predictions...", flush=True)
+predictions_unnorm_ds.to_netcdf('/home/ec2-user/ML_Thesis_with_DL/data/jones_original_predictions.nc')
+print("Done! Saved to data/jones_original_predictions.nc", flush=True)
