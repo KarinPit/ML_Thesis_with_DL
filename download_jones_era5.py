@@ -5,7 +5,7 @@ import gcsfs
 from datetime import datetime
 import pandas as pd
 
-LAT_MIN, LAT_MAX = 30.970, 43.435
+LAT_MIN, LAT_MAX = 28.0, 43.435   # extended south to include Negev / Eilat (~29.5°N)
 LON_MIN, LON_MAX = -9.142, 39.292
 
 PRESSURE_LEVELS = [500, 1000]  # hPa — Jones et al. use 500 & 1000 hPa for wind/RH
