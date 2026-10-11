@@ -114,7 +114,7 @@ class SimpleCNN(nn.Module):
         self.decoder0 = self.decoder_block(16, 32)
         self.outputs = nn.Sequential(
             nn.Conv2d(32, 1, kernel_size=1, padding=0),
-#            nn.ReLU()  # Ensures non-negative output
+            nn.ReLU()  # Ensures non-negative output (log1p counts are always >= 0)
         )
 
     def conv_block(self, in_channels, out_channels):
@@ -220,14 +220,8 @@ X_std  = np.sqrt(np.maximum(X_sum_sq / X_count - X_mean**2, 1e-12))
 pos_rate = y_pos_count / y_tot_count
 print(f"Train stats done.  pos_rate={pos_rate:.4f}  ({y_pos_count:.0f} / {y_tot_count:.0f} pixels)", flush=True)
 
-# Plain BCE loss — no pos_weight
-# criterion = nn.BCEWithLogitsLoss()
-
-pos_weight_val = (1.0 - pos_rate) / max(pos_rate, 1e-6)
-pos_weight_val = float(np.clip(pos_weight_val, 1.0, 6.0))
-criterion = nn.BCEWithLogitsLoss(
-    pos_weight=torch.tensor(pos_weight_val, dtype=torch.float32).to(DEVICE)
-)
+# MSE loss on log1p-transformed stroke counts
+criterion = nn.MSELoss()
 
 print("Train stats done.", flush=True)
 
@@ -245,8 +239,8 @@ def norm_to_tensor(by_year_dict, label):
 
         # Stack features: (T, lat, lon, n_X_vars)
         X_arr = np.stack([sub_X[v].values for v in feature_name], axis=-1).astype(np.float32)
-        # Binary target: 1 if any lightning, 0 otherwise — shape (T, lat, lon, 1)
-        y_arr = (sub_y['ltg'].values > 0).astype(np.float32)[:, :, :, np.newaxis]
+        # Log1p-transform stroke counts — shape (T, lat, lon, 1)
+        y_arr = np.log1p(sub_y['ltg'].values).astype(np.float32)[:, :, :, np.newaxis]
         del sub_X, sub_y
 
         # Normalise features per month; y is already binary — no normalisation needed
@@ -275,14 +269,15 @@ test_times_sorted = np.concatenate(
 print("\nTensors ready. Starting training...", flush=True)
 
 def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, val_targets, batch_size=128, epochs=50, patience=5):
-    model.train()
     dataset_size = len(train_inputs)
     val_size = len(val_inputs)
 
     best_val_loss = float('inf')
-    patience_counter = 5
+    patience_counter = 0
 
     for epoch in range(epochs):
+        # ── Training phase ──────────────────────────────────────────────────────
+        model.train()
         permutation = torch.randperm(dataset_size)
         for i in range(0, dataset_size, batch_size):
             indices = permutation[i:i + batch_size]
@@ -294,9 +289,10 @@ def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, 
             loss.backward()
             optimizer.step()
 
-        # Validation phase
+        # ── Validation phase ────────────────────────────────────────────────────
         model.eval()
         val_loss = 0
+        n_val_batches = math.ceil(val_size / batch_size)
         with torch.no_grad():
             for i in range(0, val_size, batch_size):
                 val_batch_inputs = val_inputs[i:i + batch_size]
@@ -304,8 +300,18 @@ def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, 
                 val_outputs = model(val_batch_inputs.to(DEVICE))
                 val_loss += criterion(val_outputs, val_batch_targets.to(DEVICE)).item()
 
-        val_loss /= max(1, val_size // batch_size)
+        val_loss /= max(1, n_val_batches)
         print(f'Epoch {epoch+1}/{epochs}, Training Loss: {loss.item():.6f}, Validation Loss: {val_loss:.6f}', flush=True)
+
+        # ── Early stopping ──────────────────────────────────────────────────────
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch+1} (no improvement for {patience} epochs)", flush=True)
+                break
 
 train(model, criterion, optimizer, tr_X_tensor, tr_y_tensor, val_X_tensor, val_y_tensor)
 
@@ -318,9 +324,10 @@ with torch.no_grad():
         logit_parts.append(model(test_X_tensor[i:i+128].to(DEVICE)).cpu())
     logits = torch.cat(logit_parts, dim=0)   # raw logits, shape (T, 1, lat, lon)
 
-# Sigmoid → probabilities; threshold at 0.5 → binary predictions
-prob_np   = torch.sigmoid(logits).numpy().squeeze(1)   # (T, lat, lon), values 0–1
-pred_binary_np = (prob_np >= 0.5).astype(np.float32)   # (T, lat, lon), 0 or 1
+# Model outputs log1p(count) — invert to get predicted stroke counts
+log_pred_np    = logits.numpy().squeeze(1)              # (T, lat, lon), log1p scale
+pred_count_np  = np.expm1(log_pred_np).clip(0)         # (T, lat, lon), stroke counts >= 0
+pred_binary_np = (pred_count_np >= 1).astype(np.float32)  # binary: >= 1 stroke = positive
 
 T_test = len(test_times_sorted)
 
@@ -332,7 +339,7 @@ coords = {
     'lon':  ds_daily.lon.values[:n_lon],
 }
 ds_out = xr.Dataset({
-    'prob': xr.DataArray(prob_np,        dims=dims, coords=coords),  # predicted probability
+    'prob': xr.DataArray(pred_count_np,  dims=dims, coords=coords),  # predicted stroke count
     'pred': xr.DataArray(pred_binary_np, dims=dims, coords=coords),  # binary prediction (0/1)
 })
 out_path = '/home/ec2-user/ML_Thesis_with_DL/data/unet_binary_OND_predictions.nc'
@@ -346,13 +353,14 @@ print("\nComputing test metrics...", flush=True)
 from scipy.ndimage import uniform_filter
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-# True binary labels for the test set
+# True labels for the test set
 test_obs_parts = []
 for yr, yr_indices in test_by_year.items():
     sub_y = dataset_cnn[output_name].isel(time=yr_indices).load()
-    test_obs_parts.append((sub_y['ltg'].values > 0).astype(np.float32))
+    test_obs_parts.append(sub_y['ltg'].values.astype(np.float32))
     del sub_y; gc.collect()
-obs_binary_np = np.concatenate(test_obs_parts, axis=0)   # (T, lat, lon), 0 or 1
+obs_count_np  = np.concatenate(test_obs_parts, axis=0)    # (T, lat, lon), raw counts
+obs_binary_np = (obs_count_np > 0).astype(np.float32)     # (T, lat, lon), 0 or 1
 
 # Pixel-level classification metrics (flattened)
 obs_flat  = obs_binary_np.ravel().astype(int)
@@ -362,7 +370,7 @@ prec = precision_score(obs_flat, pred_flat, zero_division=0)
 rec  = recall_score(obs_flat, pred_flat, zero_division=0)
 f1   = f1_score(obs_flat, pred_flat, zero_division=0)
 
-# FSS (Jones metric): obs threshold=0.5 on binary obs, pred threshold=0.5 on probs
+# FSS: threshold obs at 1 stroke, pred at 1 stroke
 def compute_fss(obs, pred, threshold, window_size):
     obs_bin  = (obs  >= threshold).astype(int)
     pred_bin = (pred >= threshold).astype(int)
@@ -372,9 +380,9 @@ def compute_fss(obs, pred, threshold, window_size):
     den = np.sum(pred_frac**2 + obs_frac**2)
     return np.nan if den == 0 else 1 - num / den
 
-THRESHOLD, WINDOW = 0.5, 3
+THRESHOLD, WINDOW = 1.0, 3   # >= 1 stroke = positive
 fss_scores = [
-    compute_fss(obs_binary_np[i], prob_np[i], THRESHOLD, WINDOW)
+    compute_fss(obs_count_np[i], pred_count_np[i], THRESHOLD, WINDOW)
     for i in range(T_test)
 ]
 fss_arr   = np.array(fss_scores)
