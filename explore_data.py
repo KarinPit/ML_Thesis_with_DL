@@ -40,12 +40,18 @@ ds_feat = ds[feature_vars].resample(time='12h').mean()
 ds_ltg  = ds[['ltg']].resample(time='12h').sum()
 ds_12h  = xr.merge([ds_feat, ds_ltg])
 
-all_vars  = list(ds_12h.data_vars)
-all_times = pd.DatetimeIndex(ds_12h.time.values)
+all_vars   = list(ds_12h.data_vars)
+all_times  = pd.DatetimeIndex(ds_12h.time.values)
 lats = ds_12h.lat.values
 lons = ds_12h.lon.values
 
-print(f"Ready: {len(all_times)} timesteps, {len(all_vars)} variables", flush=True)
+# OND filter — only timesteps actually used by the model
+OND_MONTHS   = [10, 11, 12]
+ond_mask     = all_times.month.isin(OND_MONTHS)
+ond_indices  = np.where(ond_mask)[0]          # positions in ds_12h
+ond_times    = all_times[ond_mask]
+
+print(f"Ready: {len(all_times)} total timesteps → {len(ond_times)} OND timesteps, {len(all_vars)} variables", flush=True)
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = dash.Dash(__name__)
@@ -72,10 +78,10 @@ app.layout = html.Div([
                 dcc.Slider(
                     id='time-slider',
                     min=0,
-                    max=len(all_times) - 1,
+                    max=len(ond_times) - 1,
                     step=1,
                     value=0,
-                    marks={i: str(all_times[i].date()) for i in range(0, len(all_times), max(1, len(all_times)//10))},
+                    marks={i: str(ond_times[i].date()) for i in range(0, len(ond_times), max(1, len(ond_times)//10))},
                     tooltip={"placement": "bottom", "always_visible": True},
                 ),
             ], style={'width': '700px'}),
@@ -107,8 +113,9 @@ app.layout = html.Div([
     Input('time-slider',  'value'),
 )
 def update(var, t_idx):
-    ts  = all_times[t_idx]
-    arr = ds_12h[var].isel(time=t_idx).values   # (lat, lon)
+    ds_idx = int(ond_indices[t_idx])             # position in full ds_12h
+    ts     = ond_times[t_idx]
+    arr    = ds_12h[var].isel(time=ds_idx).values   # (lat, lon)
 
     # ── Stats ──────────────────────────────────────────────────────────────────
     flat     = arr.ravel()
@@ -172,7 +179,7 @@ def update(var, t_idx):
         yaxis=dict(range=[float(lats.min()), float(lats.max())], scaleanchor='x', scaleratio=1),
     )
 
-    time_label = f"Timestep {t_idx + 1} / {len(all_times)}  —  {ts.strftime('%A, %d %B %Y  %H:%M UTC')}"
+    time_label = f"Timestep {t_idx + 1} / {len(ond_times)} (OND only)  —  {ts.strftime('%A, %d %B %Y  %H:%M UTC')}"
 
     return fig, stat_boxes, time_label
 
