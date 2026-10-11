@@ -236,11 +236,13 @@ for row, (m, mlabel) in enumerate(zip(OND_MONTHS, OND_LABELS)):
     obs_plot  = np.where(raw_obs_sm  > 0, raw_obs_sm,  np.nan)
     prob_plot = np.where(raw_prob_sm > 0, raw_prob_sm, np.nan)
 
-    last_im = draw_map(fig, axs[row, 0], obs_plot,  0, vmax, cmap_ltg,
+    vmin = vmax * 0.02   # values below 2% of max render as white
+
+    last_im = draw_map(fig, axs[row, 0], obs_plot,  vmin, vmax, cmap_ltg,
                        proj=proj, add_cb=False)
     axs[row, 0].set_title(f'{mlabel} — Observed (WWLN)', fontsize=11, pad=3)
 
-    draw_map(fig, axs[row, 1], prob_plot, 0, vmax, cmap_ltg,
+    draw_map(fig, axs[row, 1], prob_plot, vmin, vmax, cmap_ltg,
              proj=proj, add_cb=False)
     axs[row, 1].set_title(f'{mlabel} — U-Net Predicted Density', fontsize=11, pad=3)
 
