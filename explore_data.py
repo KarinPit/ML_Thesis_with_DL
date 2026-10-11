@@ -66,7 +66,6 @@ ds_12h  = xr.merge([ds_feat, ds_ltg])
 # resample() fills gaps between years with NaN rows — drop them by keeping only Sep-Dec
 season_mask = ds_12h.time.dt.month.isin([9, 10, 11, 12])
 season_idx  = np.where(season_mask.values)[0]
-season_idx  = season_idx[np.argsort(ds_12h.time.values[season_idx])]
 ds_12h = ds_12h.isel(time=season_idx)
 
 all_vars  = list(ds_12h.data_vars)
@@ -76,6 +75,8 @@ lons = ds_12h.lon.values
 
 print(f"Ready: {len(all_times)} timesteps, {len(all_vars)} variables", flush=True)
 print(f"Months in dataset: {sorted(all_times.month.unique().tolist())}", flush=True)
+print(f"First 5 dates: {all_times[:5].tolist()}", flush=True)
+print(f"Last  5 dates: {all_times[-5:].tolist()}", flush=True)
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = dash.Dash(__name__)
