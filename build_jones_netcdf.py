@@ -91,39 +91,69 @@ def build_year(year: int) -> xr.Dataset:
     if ds_light is not None:
         ds_light = align(ds_light, fill=0)
 
+    # ── Helper: safely extract a variable (returns NaN array if missing) ─────────
+    def get_sl(name, alt=None):
+        """Get single-level variable by name or alt name."""
+        for n in ([name] + ([alt] if alt else [])):
+            if n in ds_jones_s:
+                return ds_jones_s[n].values.astype('float32')
+        print(f"    WARNING: {name} not found in single-level file — filling NaN")
+        return np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
+
+    def get_pl(name, level):
+        """Get pressure-level variable at a specific hPa level."""
+        level_dim = 'level' if 'level' in ds_jones_p.dims else 'pressure_level'
+        if name in ds_jones_p:
+            return ds_jones_p[name].sel({level_dim: level}).values.astype('float32')
+        print(f"    WARNING: {name}@{level}hPa not found — filling NaN")
+        return np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
+
+    level_dim = 'level' if 'level' in ds_jones_p.dims else 'pressure_level'
+
     # ── Extract variables ──────────────────────────────────────────────────────
 
-    # C — CAPE (from jones_single_level)
-    cape = ds_jones_s['convective_available_potential_energy'].values.astype('float32')
+    # ── Single-level ──────────────────────────────────────────────────────────
+    cape   = get_sl('convective_available_potential_energy')
+    lsm    = get_sl('land_sea_mask', 'lsm')
+    t2m    = get_sl('2m_temperature', 't2m')
+    wcd    = get_sl('wcd')                        # derived in download script
+    ki     = get_sl('k_index')
+    tti    = get_sl('total_totals_index')
+    tciw   = get_sl('total_column_cloud_ice_water')
+    tclw   = get_sl('total_column_cloud_liquid_water')
+    sp     = get_sl('surface_pressure')
+    cbh    = get_sl('cloud_base_height')
+    zdl    = get_sl('zero_degree_level')
 
-    # P — Precipitation (IMERG)
+    # ── Derived (pre-computed in download script) ──────────────────────────────
+    rh_var    = 'rh_avg'    if 'rh_avg'    in ds_jones_p else 'rh'
+    shear_var = 'wind_shear' if 'wind_shear' in ds_jones_p else 'shear'
+    rh    = ds_jones_p[rh_var].values.astype('float32')    if rh_var    in ds_jones_p else np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
+    shear = ds_jones_p[shear_var].values.astype('float32') if shear_var in ds_jones_p else np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
+
+    # ── Pressure-level @ 500 & 1000 hPa ──────────────────────────────────────
+    vv500   = get_pl('vertical_velocity',              500)
+    vv1000  = get_pl('vertical_velocity',              1000)
+    t500    = get_pl('temperature',                    500)
+    t1000   = get_pl('temperature',                    1000)
+    q500    = get_pl('specific_humidity',              500)
+    q1000   = get_pl('specific_humidity',              1000)
+    z500    = get_pl('geopotential',                   500)
+    z1000   = get_pl('geopotential',                   1000)
+    ciwc500 = get_pl('specific_cloud_ice_water_content',    500)
+    ciwc1000= get_pl('specific_cloud_ice_water_content',    1000)
+    clwc500 = get_pl('specific_cloud_liquid_water_content', 500)
+    clwc1000= get_pl('specific_cloud_liquid_water_content', 1000)
+    u500    = get_pl('u_component_of_wind',            500)
+    u1000   = get_pl('u_component_of_wind',            1000)
+    v500    = get_pl('v_component_of_wind',            500)
+    v1000   = get_pl('v_component_of_wind',            1000)
+
+    # ── Precipitation (IMERG) ─────────────────────────────────────────────────
     precip_var = 'precipitation' if 'precipitation' in ds_imerg else list(ds_imerg.data_vars)[0]
     precip = ds_imerg[precip_var].values.astype('float32')
 
-    # L — Land-Sea Mask
-    lsm_var = 'land_sea_mask' if 'land_sea_mask' in ds_jones_s else 'lsm'
-    lsm = ds_jones_s[lsm_var].values.astype('float32')
-
-    # T — 2m Temperature
-    t2m_var = '2m_temperature' if '2m_temperature' in ds_jones_s else 't2m'
-    t2m = ds_jones_s[t2m_var].values.astype('float32')
-
-    # W — Warm Cloud Depth
-    wcd = ds_jones_s['wcd'].values.astype('float32')
-
-    # R — RH average (pre-derived in jones_pressure_level, no pressure dim)
-    rh_var = 'rh_avg' if 'rh_avg' in ds_jones_p else 'rh'
-    rh = ds_jones_p[rh_var].values.astype('float32')
-
-    # S — Wind Shear (pre-derived in jones_pressure_level, no pressure dim)
-    shear_var = 'wind_shear' if 'wind_shear' in ds_jones_p else 'shear'
-    shear = ds_jones_p[shear_var].values.astype('float32')
-
-    # V — Vertical velocity at 500 hPa (from jones_pressure_level, levels: 500 & 1000)
-    level_dim = 'level' if 'level' in ds_jones_p.dims else 'pressure_level'
-    vv = ds_jones_p['vertical_velocity'].sel({level_dim: 500}).values.astype('float32')
-
-    # Target — lightning count
+    # ── Target — lightning count ──────────────────────────────────────────────
     if ds_light is not None:
         ltg_var = 'lightning_count' if 'lightning_count' in ds_light else list(ds_light.data_vars)[0]
         ltg = ds_light[ltg_var].values.astype('float32')
@@ -132,17 +162,47 @@ def build_year(year: int) -> xr.Dataset:
 
     # ── Build output dataset ───────────────────────────────────────────────────
     coords = {'time': times, 'lat': lats, 'lon': lons}
+    D = ['time', 'lat', 'lon']
+
+    def da(arr, units, long_name):
+        return xr.DataArray(arr, dims=D, attrs={'units': units, 'long_name': long_name})
 
     data_vars = {
-        'cape':                     xr.DataArray(cape,   dims=['time','lat','lon'], attrs={'units': 'J kg-1',   'long_name': 'CAPE'}),
-        'precipitation':            xr.DataArray(precip, dims=['time','lat','lon'], attrs={'units': 'mm hr-1',  'long_name': 'IMERG precipitation'}),
-        'lsm':                      xr.DataArray(lsm,    dims=['time','lat','lon'], attrs={'units': '0-1',      'long_name': 'Land-sea mask'}),
-        't2m':                      xr.DataArray(t2m,    dims=['time','lat','lon'], attrs={'units': 'K',        'long_name': '2m temperature'}),
-        'wcd':                      xr.DataArray(wcd,    dims=['time','lat','lon'], attrs={'units': 'm',        'long_name': 'Warm cloud depth'}),
-        'rh':                       xr.DataArray(rh,     dims=['time','lat','lon'], attrs={'units': '%',        'long_name': 'RH avg 500-1000 hPa'}),
-        'shear':                    xr.DataArray(shear,  dims=['time','lat','lon'], attrs={'units': 'm s-1',    'long_name': 'Wind shear 500-1000 hPa'}),
-        'vertical_velocity_500hPa': xr.DataArray(vv,     dims=['time','lat','lon'], attrs={'units': 'Pa s-1',   'long_name': 'Vertical velocity at 500 hPa'}),
-        'ltg':                      xr.DataArray(ltg,    dims=['time','lat','lon'], attrs={'units': 'count',    'long_name': 'Lightning count', 'source': 'WWLN'}),
+        # ── Jones CPLRSTW features ──────────────────────────────────────────
+        'cape':                      da(cape,    'J kg-1',  'CAPE'),
+        'precipitation':             da(precip,  'mm hr-1', 'IMERG precipitation'),
+        'lsm':                       da(lsm,     '0-1',     'Land-sea mask'),
+        't2m':                       da(t2m,     'K',       '2m temperature'),
+        'wcd':                       da(wcd,     'm',       'Warm cloud depth (ZDL-CBH)'),
+        'rh':                        da(rh,      '%',       'RH avg 500-1000 hPa'),
+        'shear':                     da(shear,   'm s-1',   'Wind shear 500-1000 hPa'),
+        'vertical_velocity_500hPa':  da(vv500,   'Pa s-1',  'Vertical velocity 500 hPa'),
+        # ── Additional single-level ─────────────────────────────────────────
+        'k_index':                   da(ki,      'K',       'K-index'),
+        'total_totals_index':        da(tti,     'K',       'Total Totals Index'),
+        'total_column_cloud_ice_water':    da(tciw, 'kg m-2', 'Total column cloud ice water'),
+        'total_column_cloud_liquid_water': da(tclw, 'kg m-2', 'Total column cloud liquid water'),
+        'surface_pressure':          da(sp,      'Pa',      'Surface pressure'),
+        'cloud_base_height':         da(cbh,     'm',       'Cloud base height'),
+        'zero_degree_level':         da(zdl,     'm',       'Zero degree level'),
+        # ── Additional pressure-level ───────────────────────────────────────
+        'vertical_velocity_1000hPa': da(vv1000,   'Pa s-1',  'Vertical velocity 1000 hPa'),
+        't500':                      da(t500,    'K',       'Temperature 500 hPa'),
+        't1000':                     da(t1000,   'K',       'Temperature 1000 hPa'),
+        'q500':                      da(q500,    'kg kg-1', 'Specific humidity 500 hPa'),
+        'q1000':                     da(q1000,   'kg kg-1', 'Specific humidity 1000 hPa'),
+        'z500':                      da(z500,    'm2 s-2',  'Geopotential 500 hPa'),
+        'z1000':                     da(z1000,   'm2 s-2',  'Geopotential 1000 hPa'),
+        'ciwc500':                   da(ciwc500, 'kg kg-1', 'Cloud ice water content 500 hPa'),
+        'ciwc1000':                  da(ciwc1000,'kg kg-1', 'Cloud ice water content 1000 hPa'),
+        'clwc500':                   da(clwc500, 'kg kg-1', 'Cloud liquid water content 500 hPa'),
+        'clwc1000':                  da(clwc1000,'kg kg-1', 'Cloud liquid water content 1000 hPa'),
+        'u500':                      da(u500,    'm s-1',   'U wind 500 hPa'),
+        'u1000':                     da(u1000,   'm s-1',   'U wind 1000 hPa'),
+        'v500':                      da(v500,    'm s-1',   'V wind 500 hPa'),
+        'v1000':                     da(v1000,   'm s-1',   'V wind 1000 hPa'),
+        # ── Target ──────────────────────────────────────────────────────────
+        'ltg':                       da(ltg,     'count',   'Lightning count (WWLN)'),
     }
 
     ds_year = xr.Dataset(data_vars, coords=coords)
