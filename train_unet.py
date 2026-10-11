@@ -64,7 +64,7 @@ print(f"Grid trimmed to: {n_lat} × {n_lon}", flush=True)
 
 # ── Resample to 12-hourly ───────────────────────────────────────────────────────
 print("Resampling to 12-hourly...", flush=True)
-feature_name = ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd']
+feature_name = ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd', 'vertical_velocity_500hPa']
 output_name  = ['ltg']
 
 ds_feat = ds_hourly[feature_name].resample(time='12h').mean()
