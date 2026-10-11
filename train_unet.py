@@ -7,7 +7,6 @@ import scipy.stats as stats
 import netCDF4
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
-from collections import defaultdict
 
 import sys
 import random
@@ -38,61 +37,45 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 import gc
 
+os.chdir('/home/ec2-user/ML_Thesis_with_DL/data/')
 
-os.chdir('/home/ec2-user/ML_Thesis_with_DL/data')
+# ── Device ─────────────────────────────────────────────────────────────────────
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"Using device: {DEVICE}", flush=True)
 
-# ── Domain bounds ──────────────────────────────────────────────────────────────
-LAT_MIN, LAT_MAX = 30.970, 43.435
-LON_MIN, LON_MAX = -9.142, 39.292
+# ── Load dataset ───────────────────────────────────────────────────────────────
+ds_daily = xr.open_dataset('jones_israel_all_years.nc')
 
-ds_hourly = xr.open_dataset('jones_israel_all_years.nc')
-
-# ── Spatial subset to domain bounds ───────────────────────────────────────────
-lats = ds_hourly.lat.values
-if lats[0] > lats[-1]:  # descending lat (ERA5 native)
-    ds_hourly = ds_hourly.sel(lat=slice(LAT_MAX, LAT_MIN), lon=slice(LON_MIN, LON_MAX))
-else:                    # ascending lat
-    ds_hourly = ds_hourly.sel(lat=slice(LAT_MIN, LAT_MAX), lon=slice(LON_MIN, LON_MAX))
-print(f"Domain: lat [{LAT_MIN}, {LAT_MAX}], lon [{LON_MIN}, {LON_MAX}]", flush=True)
-
-# Trim to dimensions divisible by 4
-n_lat = (ds_hourly.sizes['lat'] // 4) * 4
-n_lon = (ds_hourly.sizes['lon'] // 4) * 4
-
-ds_hourly = ds_hourly.isel(lat=slice(0, n_lat), lon=slice(0, n_lon))
+# Trim to dimensions divisible by 4 (required for encoder/decoder pooling)
+n_lat = (ds_daily.sizes['lat'] // 4) * 4
+n_lon = (ds_daily.sizes['lon'] // 4) * 4
+ds_daily = ds_daily.isel(lat=slice(0, n_lat), lon=slice(0, n_lon))
 print(f"Grid trimmed to: {n_lat} × {n_lon}", flush=True)
-
-# ── Resample to 12-hourly ───────────────────────────────────────────────────────
-print("Resampling to 12-hourly...", flush=True)
-feature_name = ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd', 'vertical_velocity_500hPa']
-output_name  = ['ltg']
-
-ds_feat = ds_hourly[feature_name].resample(time='12h').mean()
-ds_ltg  = ds_hourly[output_name].resample(time='12h').sum()
-ds_daily = xr.merge([ds_feat, ds_ltg])
-print(f"After resampling: {ds_daily.sizes['time']} 12-hourly timesteps", flush=True)
 
 dataset_cnn = ds_daily
 
-# ── Print available variables so you can verify feature list ──────────────────
-print(f"\nVariables in dataset: {list(ds_daily.data_vars)}", flush=True)
+feature_name = ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd']
+output_name  = ['ltg']
 
-# ── Temporal split: 2024-2025 = test, 2013-2023 = train+val ────────────────────
-all_times  = ds_daily.time.values
-test_mask  = all_times >= np.datetime64('2024-01-01')
-idx_test   = np.where(test_mask)[0]
-idx_tv     = np.where(~test_mask)[0]
+# ── Temporal split: 2024-2025 = test, rest = train+val ────────────────────────
+all_times = ds_daily.time.values
+test_mask = all_times >= np.datetime64('2024-01-01')
+idx_test  = np.where(test_mask)[0]
+idx_tv    = np.where(~test_mask)[0]
 
-# ── Season filter: Oct-Nov-Dec only (Israel's active lightning season) ──────────
+# ── Season filter: Oct-Nov-Dec only ───────────────────────────────────────────
 ACTIVE_MONTHS = [10, 11, 12]
-all_months    = pd.DatetimeIndex(all_times).month
+all_months = pd.DatetimeIndex(all_times).month
 idx_test = idx_test[np.isin(all_months[idx_test], ACTIVE_MONTHS)]
 idx_tv   = idx_tv[np.isin(all_months[idx_tv],   ACTIVE_MONTHS)]
-print(f"Season filter ({ACTIVE_MONTHS}): {len(idx_tv)} train+val, {len(idx_test)} test timesteps", flush=True)
+print(f"Season filter {ACTIVE_MONTHS}: {len(idx_tv)} train+val, {len(idx_test)} test timesteps", flush=True)
 
 idx_train, idx_val = train_test_split(idx_tv, test_size=0.25, random_state=13)
 
+# ── Derive dims dynamically ────────────────────────────────────────────────────
 zdim = len(feature_name)
+ydim = n_lat
+xdim = n_lon
 
 seed = 13
 random.seed(seed)
@@ -100,9 +83,17 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 
 print(f"Splits — train: {len(idx_train)}, val: {len(idx_val)}, test: {len(idx_test)}", flush=True)
-print(f"Test period: {pd.Timestamp(all_times[idx_test[0]]).date()} → {pd.Timestamp(all_times[idx_test[-1]]).date()}", flush=True)
+print(f"Model dims: zdim={zdim}, ydim={ydim}, xdim={xdim}", flush=True)
 
-# ── Jones architecture: plain encoder-decoder (no skip connections) ────────────
+# ── Dataset slices ─────────────────────────────────────────────────────────────
+train_dataset_cnn_X = dataset_cnn[feature_name].isel(time=idx_train)
+val_dataset_cnn_X   = dataset_cnn[feature_name].isel(time=idx_val)
+test_dataset_cnn_X  = dataset_cnn[feature_name].isel(time=idx_test)
+train_dataset_cnn_y = dataset_cnn[output_name].isel(time=idx_train)
+val_dataset_cnn_y   = dataset_cnn[output_name].isel(time=idx_val)
+test_dataset_cnn_y  = dataset_cnn[output_name].isel(time=idx_test)
+
+# ── Model ──────────────────────────────────────────────────────────────────────
 class SimpleCNN(nn.Module):
     def __init__(self, zdim, ydim, xdim):
         super(SimpleCNN, self).__init__()
@@ -145,221 +136,135 @@ class SimpleCNN(nn.Module):
         outputs = self.outputs(decoder0)
         return outputs
 
-# Initialize model, loss function, and optimizer
-zdim_m = len(feature_name)
-ydim_m = n_lat
-xdim_m = n_lon
-print(f"Model dims: zdim={zdim_m}, ydim={ydim_m}, xdim={xdim_m}", flush=True)
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-model = SimpleCNN(zdim_m, ydim_m, xdim_m).to(DEVICE)
+model     = SimpleCNN(zdim, ydim, xdim).to(DEVICE)
+criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.005)
-# criterion defined after stats loop once pos_weight_val is computed
 
-# ── Helper: group global time indices by year ──────────────────────────────────
-def group_by_year(indices, all_times):
-    year_map = defaultdict(list)
-    for i in indices:
-        yr = str(all_times[i].astype('datetime64[Y]'))
-        year_map[yr].append(i)
-    return {yr: np.sort(np.array(idxs)) for yr, idxs in sorted(year_map.items())}
+# ── Normalisation (Jones: per-month z-score, stats from train only) ────────────
+print("Computing normalisation stats...", flush=True)
+train_X_mean = train_dataset_cnn_X.groupby('time.month').mean(dim=['time', 'lat', 'lon'])
+train_X_std  = train_dataset_cnn_X.groupby('time.month').std(dim=['time', 'lat', 'lon'])
+train_y_mean = train_dataset_cnn_y.groupby('time.month').mean(dim=['time', 'lat', 'lon'])
+train_y_std  = train_dataset_cnn_y.groupby('time.month').std(dim=['time', 'lat', 'lon'])
 
-all_times     = ds_daily.time.values
-train_by_year = group_by_year(idx_train, all_times)
-val_by_year   = group_by_year(idx_val,   all_times)
-test_by_year  = group_by_year(idx_test,  all_times)
+def zscore(ds, mean, std):
+    return ((ds.groupby('time.month') - mean).groupby('time.month') / std).fillna(0)
 
-# ── Compute train normalisation stats (Jones: per-month mean/std over time×lat×lon) ──
-n_months = 12
-n_X_vars = len(feature_name)
+print("Normalising splits...", flush=True)
+train_dataset_cnn_X_norm = zscore(train_dataset_cnn_X, train_X_mean, train_X_std)
+val_dataset_cnn_X_norm   = zscore(val_dataset_cnn_X,   train_X_mean, train_X_std)
+test_dataset_cnn_X_norm  = zscore(test_dataset_cnn_X,  train_X_mean, train_X_std)
+train_dataset_cnn_y_norm = zscore(train_dataset_cnn_y, train_y_mean, train_y_std)
+val_dataset_cnn_y_norm   = zscore(val_dataset_cnn_y,   train_y_mean, train_y_std)
+test_dataset_cnn_y_norm  = zscore(test_dataset_cnn_y,  train_y_mean, train_y_std)
 
-X_sum    = np.zeros((n_months, n_X_vars), dtype=np.float64)
-X_sum_sq = np.zeros((n_months, n_X_vars), dtype=np.float64)
-X_count  = np.zeros((n_months, n_X_vars), dtype=np.float64)
-y_sum    = np.zeros(n_months, dtype=np.float64)
-y_sum_sq = np.zeros(n_months, dtype=np.float64)
-y_count  = np.zeros(n_months, dtype=np.float64)
-y_pos    = 0.0   # pixels with lightning (ltg > 0)
-y_neg    = 0.0   # pixels without lightning
+# ── Convert to tensors ─────────────────────────────────────────────────────────
+print("Converting to tensors...", flush=True)
+def to_tensor(ds_norm):
+    arr = np.moveaxis(np.array(ds_norm.to_array()), 0, -1)
+    return torch.tensor(arr, dtype=torch.float32).permute(0, 3, 1, 2).to(DEVICE)
 
-print("Computing train stats (year-by-year)...", flush=True)
-for yr, yr_indices in train_by_year.items():
-    print(f"  Stats {yr}: {len(yr_indices)} timesteps", flush=True)
-    sub_X = dataset_cnn[feature_name].isel(time=yr_indices).load()
-    sub_y = dataset_cnn[output_name].isel(time=yr_indices).load()
-    months_arr = sub_X.time.dt.month.values
+tr_X_tensor   = to_tensor(train_dataset_cnn_X_norm)
+val_X_tensor  = to_tensor(val_dataset_cnn_X_norm)
+test_X_tensor = to_tensor(test_dataset_cnn_X_norm)
+tr_y_tensor   = to_tensor(train_dataset_cnn_y_norm)
+val_y_tensor  = to_tensor(val_dataset_cnn_y_norm)
+test_y_tensor = to_tensor(test_dataset_cnn_y_norm)
 
-    for m_idx in range(1, 13):
-        mask = (months_arr == m_idx)
-        if not mask.any():
-            continue
-        for vi, vname in enumerate(feature_name):
-            v = sub_X[vname].values[mask].astype(np.float64)
-            v_fin = v[np.isfinite(v)]
-            X_sum[m_idx-1, vi]    += v_fin.sum()
-            X_sum_sq[m_idx-1, vi] += (v_fin**2).sum()
-            X_count[m_idx-1, vi]  += len(v_fin)
-
-        yv = sub_y['ltg'].values[mask].astype(np.float64)
-        yv_fin = yv[np.isfinite(yv)]
-        y_sum[m_idx-1]    += yv_fin.sum()
-        y_sum_sq[m_idx-1] += (yv_fin**2).sum()
-        y_count[m_idx-1]  += len(yv_fin)
-
-    # Count positive/negative pixels for pos_weight
-    ltg_all = sub_y['ltg'].values
-    y_pos += float((ltg_all > 0).sum())
-    y_neg += float((ltg_all == 0).sum())
-
-    del sub_X, sub_y; gc.collect()
-
-X_mean = X_sum    / X_count
-X_std  = np.sqrt(np.maximum(X_sum_sq / X_count - X_mean**2, 1e-12))
-y_mean = y_sum    / y_count
-y_std  = np.sqrt(np.maximum(y_sum_sq / y_count - y_mean**2, 1e-12))
-print("Train stats done.", flush=True)
-for m in [10, 11, 12]:
-    print(f"  ltg month {m}: mean={y_mean[m-1]:.4f}  std={y_std[m-1]:.4f}", flush=True)
-
-# pos_weight = neg / pos (how many times rarer lightning is)
-pos_weight_val = float(y_neg / max(y_pos, 1))
-print(f"  pos_weight (neg/pos ratio) = {pos_weight_val:.2f}", flush=True)
-criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val]).to(DEVICE))
-
-# ── Load, normalise, and convert a split to tensors (Jones z-score on both X and y) ──
-def norm_to_tensor(by_year_dict, label):
-    print(f"\nNormalising + converting {label}...", flush=True)
-    X_parts, y_parts = [], []
-    for yr, yr_indices in by_year_dict.items():
-        print(f"  {yr}: {len(yr_indices)} timesteps", flush=True)
-        sub_X = dataset_cnn[feature_name].isel(time=yr_indices).load()
-        sub_y = dataset_cnn[output_name].isel(time=yr_indices).load()
-        months_arr = sub_X.time.dt.month.values
-        T = len(months_arr)
-
-        X_arr = np.stack([sub_X[v].values for v in feature_name], axis=-1).astype(np.float32)
-        # Binary target: 1 if any lightning, 0 otherwise
-        y_arr = (sub_y['ltg'].values > 0).astype(np.float32)[:, :, :, np.newaxis]
-        del sub_X, sub_y
-
-        # Z-score normalise features per month; target is already binary
-        for t in range(T):
-            m = months_arr[t] - 1
-            X_arr[t] = ((X_arr[t].astype(np.float64) - X_mean[m]) / X_std[m]).astype(np.float32)
-
-        np.nan_to_num(X_arr, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-
-        X_parts.append(torch.tensor(X_arr.transpose(0, 3, 1, 2)))
-        y_parts.append(torch.tensor(y_arr.transpose(0, 3, 1, 2)))
-        del X_arr, y_arr; gc.collect()
-
-    return torch.cat(X_parts, dim=0), torch.cat(y_parts, dim=0)
-
-tr_X_tensor,   tr_y_tensor   = norm_to_tensor(train_by_year, 'train')
-val_X_tensor,  val_y_tensor  = norm_to_tensor(val_by_year,   'val')
-test_X_tensor, test_y_tensor = norm_to_tensor(test_by_year,  'test')
-
-test_times_sorted = np.concatenate(
-    [all_times[idxs] for yr, idxs in test_by_year.items()]
-)
-
-print("\nTensors ready. Starting training...", flush=True)
-
-def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, val_targets, batch_size=128, epochs=50, patience=5):
+# ── Training ───────────────────────────────────────────────────────────────────
+def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, val_targets,
+          batch_size=128, epochs=50, patience=5):
     dataset_size = len(train_inputs)
-    val_size = len(val_inputs)
-
-    best_val_loss = float('inf')
+    val_size     = len(val_inputs)
+    best_val_loss    = float('inf')
     patience_counter = 0
     ckpt_path = '/home/ec2-user/ML_Thesis_with_DL/data/unet_best.pt'
 
     for epoch in range(epochs):
-        # ── Training phase ──────────────────────────────────────────────────────
         model.train()
         permutation = torch.randperm(dataset_size)
         for i in range(0, dataset_size, batch_size):
             indices = permutation[i:i + batch_size]
-            batch_inputs, batch_targets = train_inputs[indices], train_targets[indices]
-
+            batch_inputs  = train_inputs[indices]
+            batch_targets = train_targets[indices]
             optimizer.zero_grad()
-            outputs = model(batch_inputs.to(DEVICE))
-            loss = criterion(outputs, batch_targets.to(DEVICE))
+            loss = criterion(model(batch_inputs), batch_targets)
             loss.backward()
             optimizer.step()
 
-        # ── Validation phase ────────────────────────────────────────────────────
+        # Validation
         model.eval()
-        val_loss = 0
+        val_loss      = 0.0
         n_val_batches = math.ceil(val_size / batch_size)
         with torch.no_grad():
             for i in range(0, val_size, batch_size):
-                val_batch_inputs  = val_inputs[i:i + batch_size]
-                val_batch_targets = val_targets[i:i + batch_size]
-                val_outputs = model(val_batch_inputs.to(DEVICE))
-                val_loss += criterion(val_outputs, val_batch_targets.to(DEVICE)).item()
-
+                val_out  = model(val_inputs[i:i + batch_size])
+                val_loss += criterion(val_out, val_targets[i:i + batch_size]).item()
         val_loss /= max(1, n_val_batches)
+
         print(f'Epoch {epoch+1}/{epochs}, Training Loss: {loss.item():.6f}, Validation Loss: {val_loss:.6f}', flush=True)
 
-        # ── Early stopping + checkpoint ─────────────────────────────────────────
         if val_loss < best_val_loss:
-            best_val_loss = val_loss
+            best_val_loss    = val_loss
             patience_counter = 0
             torch.save(model.state_dict(), ckpt_path)
             print(f"  ✓ best model saved (val={val_loss:.6f})", flush=True)
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                print(f"Early stopping at epoch {epoch+1} (no improvement for {patience} epochs)", flush=True)
+                print(f"Early stopping at epoch {epoch+1}", flush=True)
                 break
 
 train(model, criterion, optimizer, tr_X_tensor, tr_y_tensor, val_X_tensor, val_y_tensor)
 
-print("Training done. Loading best checkpoint for inference...", flush=True)
+# ── Inference ──────────────────────────────────────────────────────────────────
+print("Loading best checkpoint for inference...", flush=True)
 model.load_state_dict(torch.load('/home/ec2-user/ML_Thesis_with_DL/data/unet_best.pt', map_location=DEVICE))
 model.eval()
 
 with torch.no_grad():
-    logit_parts = []
-    for i in range(0, len(test_X_tensor), 128):
-        logit_parts.append(model(test_X_tensor[i:i+128].to(DEVICE)).cpu())
-    logits = torch.cat(logit_parts, dim=0)   # (T, 1, lat, lon), raw logits
+    predictions_norm = model(test_X_tensor)
 
-# ── Binary inference: sigmoid → probability, threshold at 0.5 ─────────────────
-prob_np        = torch.sigmoid(logits).numpy().squeeze(1)   # (T, lat, lon), 0–1
-pred_count_np  = prob_np                                     # saved as "prob" in output
-pred_binary_np = (prob_np >= 0.5).astype(np.float32)        # binary prediction
+predictions_norm_np = predictions_norm.cpu().numpy().squeeze(1)
 
-T_test = len(test_times_sorted)
-
-# ── Save predictions ────────────────────────────────────────────────────────────
+# ── Jones unnormalization ──────────────────────────────────────────────────────
 dims   = ['time', 'lat', 'lon']
 coords = {
-    'time': test_times_sorted,
-    'lat':  ds_daily.lat.values[:n_lat],
-    'lon':  ds_daily.lon.values[:n_lon],
+    'time': test_dataset_cnn_y['time'].values,
+    'lat':  test_dataset_cnn_y['lat'].values,
+    'lon':  test_dataset_cnn_y['lon'].values,
 }
-ds_out = xr.Dataset({
-    'prob': xr.DataArray(pred_count_np,  dims=dims, coords=coords),  # predicted stroke count
-    'pred': xr.DataArray(pred_binary_np, dims=dims, coords=coords),  # binary prediction (0/1)
-})
-out_path = '/home/ec2-user/ML_Thesis_with_DL/data/unet_binary_OND_predictions.nc'
-print("Saving predictions...", flush=True)
-ds_out.to_netcdf(out_path)
-print(f"Done! Saved → {out_path}", flush=True)
-print(f"(Oct-Nov-Dec season model)", flush=True)
+predictions_norm_da = xr.DataArray(predictions_norm_np, dims=dims, coords=coords)
 
-# ── Evaluation metrics ──────────────────────────────────────────────────────────
-print("\nComputing test metrics...", flush=True)
+predictions_unnorm_da = (
+    ((predictions_norm_da - predictions_norm_da.mean(dim={'time', 'lat', 'lon'}))
+     / predictions_norm_da.std(dim={'time', 'lat', 'lon'})
+     ).groupby('time.month')
+    * train_dataset_cnn_y['ltg'].groupby('time.month').std(dim={'time', 'lat', 'lon'})
+).groupby('time.month') + train_dataset_cnn_y['ltg'].groupby('time.month').mean(dim={'time', 'lat', 'lon'})
+
+predictions_unnorm_da = predictions_unnorm_da.where(predictions_unnorm_da >= 0, other=0)
+predictions_unnorm_ds = predictions_unnorm_da.to_dataset(name='ltg')
+
+# ── Save predictions ───────────────────────────────────────────────────────────
+out_path = '/home/ec2-user/ML_Thesis_with_DL/data/unet_binary_OND_predictions.nc'
+pred_count_np  = predictions_unnorm_da.values
+pred_binary_np = (pred_count_np >= 1).astype('float32')
+
+ds_out = xr.Dataset({
+    'prob': xr.DataArray(pred_count_np,  dims=dims, coords=coords),
+    'pred': xr.DataArray(pred_binary_np, dims=dims, coords=coords),
+})
+ds_out.to_netcdf(out_path)
+print(f"Saved → {out_path}", flush=True)
+
+# ── Metrics ────────────────────────────────────────────────────────────────────
 from scipy.ndimage import uniform_filter
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-test_obs_parts = []
-for yr, yr_indices in test_by_year.items():
-    sub_y = dataset_cnn[output_name].isel(time=yr_indices).load()
-    test_obs_parts.append(sub_y['ltg'].values.astype(np.float32))
-    del sub_y; gc.collect()
-obs_count_np  = np.concatenate(test_obs_parts, axis=0)
-obs_binary_np = (obs_count_np > 0).astype(np.float32)
+obs_count_np  = test_dataset_cnn_y['ltg'].values.astype('float32')
+obs_binary_np = (obs_count_np > 0).astype('float32')
+T_test        = len(obs_count_np)
 
 obs_flat  = obs_binary_np.ravel().astype(int)
 pred_flat = pred_binary_np.ravel().astype(int)
@@ -369,22 +274,18 @@ rec  = recall_score(obs_flat, pred_flat, zero_division=0)
 f1   = f1_score(obs_flat, pred_flat, zero_division=0)
 
 def compute_fss(obs, pred, threshold, window_size):
-    obs_bin  = (obs  >= threshold).astype(int)
-    pred_bin = (pred >= threshold).astype(int)
+    obs_bin   = (obs  >= threshold).astype(int)
+    pred_bin  = (pred >= threshold).astype(int)
     obs_frac  = uniform_filter(obs_bin.astype(float),  size=window_size, mode='constant', cval=0)
     pred_frac = uniform_filter(pred_bin.astype(float), size=window_size, mode='constant', cval=0)
     num = np.sum((pred_frac - obs_frac) ** 2)
     den = np.sum(pred_frac**2 + obs_frac**2)
     return np.nan if den == 0 else 1 - num / den
 
-# FSS uses binary arrays (obs>=1 stroke, pred already thresholded at 0.5)
 THRESHOLD, WINDOW = 0.5, 3
-fss_scores = [
-    compute_fss(obs_binary_np[i], pred_binary_np[i], THRESHOLD, WINDOW)
-    for i in range(T_test)
-]
-fss_arr   = np.array(fss_scores)
-fss_valid = fss_arr[np.isfinite(fss_arr)]
+fss_scores = [compute_fss(obs_binary_np[i], pred_binary_np[i], THRESHOLD, WINDOW) for i in range(T_test)]
+fss_arr    = np.array(fss_scores)
+fss_valid  = fss_arr[np.isfinite(fss_arr)]
 
 print(f"\n{'='*52}")
 print(f"  TEST SET METRICS  (2024-2025, {T_test} timesteps)")
