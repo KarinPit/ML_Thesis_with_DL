@@ -42,7 +42,20 @@ import gc
 # os.chdir('/home/ec2-user/ML_Thesis_with_DL/Jones_Replicated/Lightning-CNN-main/data/input_data')
 os.chdir('/home/ec2-user/ML_Thesis_with_DL/data')
 
+# ── Domain bounds ──────────────────────────────────────────────────────────────
+LAT_MIN, LAT_MAX = 30.970, 43.435
+LON_MIN, LON_MAX = -9.142, 39.292
+
 ds_hourly = xr.open_dataset('jones_israel_all_years.nc')
+
+# ── Spatial subset to domain bounds ───────────────────────────────────────────
+lats = ds_hourly.lat.values
+if lats[0] > lats[-1]:  # descending lat (ERA5 native)
+    ds_hourly = ds_hourly.sel(lat=slice(LAT_MAX, LAT_MIN), lon=slice(LON_MIN, LON_MAX))
+else:                    # ascending lat
+    ds_hourly = ds_hourly.sel(lat=slice(LAT_MIN, LAT_MAX), lon=slice(LON_MIN, LON_MAX))
+print(f"Domain: lat [{LAT_MIN}, {LAT_MAX}], lon [{LON_MIN}, {LON_MAX}]", flush=True)
+
 # Trim to dimensions divisible by 4
 n_lat = (ds_hourly.sizes['lat'] // 4) * 4
 n_lon = (ds_hourly.sizes['lon'] // 4) * 4
@@ -208,7 +221,13 @@ pos_rate = y_pos_count / y_tot_count
 print(f"Train stats done.  pos_rate={pos_rate:.4f}  ({y_pos_count:.0f} / {y_tot_count:.0f} pixels)", flush=True)
 
 # Plain BCE loss — no pos_weight
-criterion = nn.BCEWithLogitsLoss()
+# criterion = nn.BCEWithLogitsLoss()
+
+pos_weight_val = (1.0 - pos_rate) / max(pos_rate, 1e-6)
+pos_weight_val = float(np.clip(pos_weight_val, 1.0, 6.0))
+criterion = nn.BCEWithLogitsLoss(
+    pos_weight=torch.tensor(pos_weight_val, dtype=torch.float32).to(DEVICE)
+)
 
 print("Train stats done.", flush=True)
 

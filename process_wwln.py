@@ -29,17 +29,36 @@ DATA_DIR  = 'data'
 WWLN_DIR  = os.path.join(DATA_DIR, 'WWLN')
 YEARS     = list(range(2013, 2025))
 
-# ERA5 grid bounds (from jones_single_level files)
-
-LAT_MIN, LAT_MAX = 30.970, 43.435
+# ERA5 grid bounds (used only as fallback if no reference file is found)
+LAT_MIN, LAT_MAX = 28.0, 43.435
 LON_MIN, LON_MAX = -9.142, 39.292
 GRID_RES = 0.25
 
 
 def make_grid():
-    """Return lat/lon arrays matching the ERA5 grid."""
-    lats = np.arange(LAT_MAX, LAT_MIN - GRID_RES/2, -GRID_RES).astype('float32')
-    lons = np.arange(LON_MIN, LON_MAX + GRID_RES/2,  GRID_RES).astype('float32')
+    """
+    Return lat/lon arrays matching the ACTUAL ERA5 0.25° grid.
+
+    ERA5 grid points sit at exact multiples of 0.25°.
+    The domain bounds (LAT_MAX=43.435, LON_MIN=-9.142 etc.) are NOT on those
+    multiples, so we snap them inward to the nearest 0.25° grid point:
+      LAT_MAX 43.435 → floor to 43.25   (don't overshoot northward)
+      LAT_MIN 28.0   → ceil  to 28.0    (already on grid)
+      LON_MIN -9.142 → ceil  to -9.0    (don't overshoot westward)
+      LON_MAX 39.292 → floor to 39.25   (don't overshoot eastward)
+    This gives exactly the same lat/lon values that ARCO-ERA5 returns for
+    these bounds, so WWLN and ERA5 share a perfectly aligned grid.
+    """
+    lat_max_snap = np.floor(LAT_MAX / GRID_RES) * GRID_RES   # 43.435 → 43.25
+    lat_min_snap = np.ceil( LAT_MIN / GRID_RES) * GRID_RES   # 28.0   → 28.0
+    lon_min_snap = np.ceil( LON_MIN / GRID_RES) * GRID_RES   # -9.142 → -9.0
+    lon_max_snap = np.floor(LON_MAX / GRID_RES) * GRID_RES   # 39.292 → 39.25
+
+    lats = np.arange(lat_max_snap, lat_min_snap - GRID_RES/2, -GRID_RES).astype('float32')
+    lons = np.arange(lon_min_snap, lon_max_snap + GRID_RES/2,  GRID_RES).astype('float32')
+    print(f"  Grid (snapped to ERA5 0.25° points): "
+          f"lat {lats[-1]:.2f}–{lats[0]:.2f} ({len(lats)} pts), "
+          f"lon {lons[0]:.2f}–{lons[-1]:.2f} ({len(lons)} pts)")
     return lats, lons
 
 
@@ -106,9 +125,9 @@ def process_year(year: int):
         if df.empty:
             continue
 
-        # Snap to nearest grid cell
-        df['lat_idx'] = np.round((LAT_MAX - df['lat']) / GRID_RES).astype(int).clip(0, n_lat - 1)
-        df['lon_idx'] = np.round((df['lon'] - LON_MIN) / GRID_RES).astype(int).clip(0, n_lon - 1)
+        # Snap to nearest grid cell (use actual ERA5 grid origin, not LAT_MAX/LON_MIN)
+        df['lat_idx'] = np.round((lats[0] - df['lat']) / GRID_RES).astype(int).clip(0, n_lat - 1)
+        df['lon_idx'] = np.round((df['lon'] - lons[0]) / GRID_RES).astype(int).clip(0, n_lon - 1)
         df['t_idx']   = df['datetime'].map(time_index)
 
         # Drop rows where time is outside the year (shouldn't happen, but safety)

@@ -35,7 +35,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, r2_score
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 DATA_DIR = '/home/ec2-user/ML_Thesis_with_DL/data'
-FIG_DIR  = os.path.join(DATA_DIR, 'figures')
+FIG_DIR  = '/home/ec2-user/ML_Thesis_with_DL/figures'
 os.makedirs(FIG_DIR, exist_ok=True)
 
 # ── Load predictions (binary OND model, test set 2024-2025) ─────────────────

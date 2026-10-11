@@ -1,9 +1,0 @@
-xarray
-zarr
-gcsfs
-numpy
-pandas
-lightgbm
-scikit-learn
-pyarrow
-openpyxl

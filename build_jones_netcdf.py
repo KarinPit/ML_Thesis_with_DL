@@ -186,3 +186,17 @@ print(f"\nAll done! {len(saved)} year file(s) written.")
 print(f"\nTo load all years lazily during training:")
 print(f"  import xarray as xr")
 print(f"  ds = xr.open_mfdataset('data/jones_israel_*.nc', chunks={{'time': 24}})")
+
+# ── Combine all per-year files into one jones_israel_all_years.nc ─────────────
+ALL_YEARS_PATH = os.path.join(DATA_DIR, 'jones_israel_all_years.nc')
+print(f"\nCombining {len(saved)} yearly files → {ALL_YEARS_PATH} ...")
+
+import xarray as xr
+ds_all = xr.open_mfdataset(sorted(saved), combine='by_coords', chunks={'time': 24})
+ds_all.attrs['description'] = 'Jones et al. CPLRSTW features + lightning target, all years combined'
+ds_all.attrs['years']       = f"{ALL_YEARS[0]}–{ALL_YEARS[-1]}"
+
+# Write as a single NetCDF (this may take a few minutes for 13 years)
+ds_all.to_netcdf(ALL_YEARS_PATH)
+ds_all.close()
+print(f"Saved: {ALL_YEARS_PATH}")
