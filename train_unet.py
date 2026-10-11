@@ -39,7 +39,6 @@ from torchvision import datasets, transforms
 import gc
 
 
-# os.chdir('/home/ec2-user/ML_Thesis_with_DL/Jones_Replicated/Lightning-CNN-main/data/input_data')
 os.chdir('/home/ec2-user/ML_Thesis_with_DL/data')
 
 # ── Domain bounds ──────────────────────────────────────────────────────────────
@@ -64,9 +63,6 @@ ds_hourly = ds_hourly.isel(lat=slice(0, n_lat), lon=slice(0, n_lon))
 print(f"Grid trimmed to: {n_lat} × {n_lon}", flush=True)
 
 # ── Resample to 12-hourly ───────────────────────────────────────────────────────
-# ERA5 features: average over each 12h window
-# ltg (stroke counts): sum over each 12h window (counts accumulate)
-# lsm is constant in time — mean is fine
 print("Resampling to 12-hourly...", flush=True)
 feature_name = ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd']
 output_name  = ['ltg']
@@ -103,66 +99,61 @@ torch.manual_seed(seed)
 print(f"Splits — train: {len(idx_train)}, val: {len(idx_val)}, test: {len(idx_test)}", flush=True)
 print(f"Test period: {pd.Timestamp(all_times[idx_test[0]]).date()} → {pd.Timestamp(all_times[idx_test[-1]]).date()}", flush=True)
 
-# Define the PyTorch model — U-Net with skip connections
+# ── Jones architecture: plain encoder-decoder (no skip connections) ────────────
 class SimpleCNN(nn.Module):
     def __init__(self, zdim, ydim, xdim):
         super(SimpleCNN, self).__init__()
-        # Encoder (same channel sizes as Jones)
-        self.enc0 = self.conv_block(zdim, 32)
-        self.pool0 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.enc1 = self.conv_block(32, 16)
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        # Bottleneck
+        self.encoder0 = self.encoder_block(zdim, 32)
+        self.encoder1 = self.encoder_block(32, 16)
         self.center = self.conv_block(16, 8)
-
-        # Decoder with skip connections (enc feature channels concatenated)
-        self.up1    = nn.ConvTranspose2d(8, 16, kernel_size=2, stride=2)
-        self.dec1   = self.conv_block(16 + 16, 16)   # 16 from up + 16 skip from enc1
-
-        self.up0    = nn.ConvTranspose2d(16, 32, kernel_size=2, stride=2)
-        self.dec0   = self.conv_block(32 + 32, 32)   # 32 from up + 32 skip from enc0
-
+        self.decoder1 = self.decoder_block(8, 16)
+        self.decoder0 = self.decoder_block(16, 32)
         self.outputs = nn.Sequential(
             nn.Conv2d(32, 1, kernel_size=1, padding=0),
-            nn.ReLU()   # log1p targets are always >= 0
+#            nn.ReLU()  # Ensures non-negative output
         )
 
     def conv_block(self, in_channels, out_channels):
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+
+    def encoder_block(self, in_channels, out_channels):
+        return nn.Sequential(
+            self.conv_block(in_channels, out_channels),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
+
+    def decoder_block(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
-        # Encoder
-        e0 = self.enc0(x)           # (B, 32, H,   W)
-        e1 = self.enc1(self.pool0(e0))  # (B, 16, H/2, W/2)
-        c  = self.center(self.pool1(e1))  # (B,  8, H/4, W/4)
-
-        # Decoder + skip connections
-        d1 = self.dec1(torch.cat([self.up1(c), e1], dim=1))   # (B, 16, H/2, W/2)
-        d0 = self.dec0(torch.cat([self.up0(d1), e0], dim=1))  # (B, 32, H,   W)
-
-        return self.outputs(d0)
+        encoder0 = self.encoder0(x)
+        encoder1 = self.encoder1(encoder0)
+        center = self.center(encoder1)
+        decoder1 = self.decoder1(center)
+        decoder0 = self.decoder0(decoder1)
+        outputs = self.outputs(decoder0)
+        return outputs
 
 # Initialize model, loss function, and optimizer
-# zdim = number of input features; ydim/xdim = spatial grid (unused inside the model,
-# but kept for clarity — SimpleCNN's conv layers work on any spatial size)
-zdim_m = len(feature_name)   # 7
-ydim_m = n_lat               # trimmed lat dimension
-xdim_m = n_lon               # trimmed lon dimension
+zdim_m = len(feature_name)
+ydim_m = n_lat
+xdim_m = n_lon
 print(f"Model dims: zdim={zdim_m}, ydim={ydim_m}, xdim={xdim_m}", flush=True)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 model = SimpleCNN(zdim_m, ydim_m, xdim_m).to(DEVICE)
+criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.005)
-# criterion is defined after the stats loop, once pos_weight is known
 
-# ── Helper: group global time indices by year (for sequential disk reads) ──────
+# ── Helper: group global time indices by year ──────────────────────────────────
 def group_by_year(indices, all_times):
-    """Returns sorted dict: year_str -> sorted array of global indices."""
     year_map = defaultdict(list)
     for i in indices:
         yr = str(all_times[i].astype('datetime64[Y]'))
@@ -174,27 +165,23 @@ train_by_year = group_by_year(idx_train, all_times)
 val_by_year   = group_by_year(idx_val,   all_times)
 test_by_year  = group_by_year(idx_test,  all_times)
 
-# ── Compute train normalisation stats incrementally (year-by-year) ─────────────
-# Jones normalises per (month, variable) with mean/std over (time, lat, lon).
-# We reproduce this exactly using running sums so we never load all train at once.
+# ── Compute train normalisation stats (Jones: per-month mean/std over time×lat×lon) ──
 n_months = 12
 n_X_vars = len(feature_name)
-n_y_vars = len(output_name)
 
 X_sum    = np.zeros((n_months, n_X_vars), dtype=np.float64)
 X_sum_sq = np.zeros((n_months, n_X_vars), dtype=np.float64)
 X_count  = np.zeros((n_months, n_X_vars), dtype=np.float64)
-# y stats for z-score normalisation of ltg (Jones approach)
 y_sum    = np.zeros(n_months, dtype=np.float64)
 y_sum_sq = np.zeros(n_months, dtype=np.float64)
 y_count  = np.zeros(n_months, dtype=np.float64)
 
-print("Computing train stats (year-by-year to save RAM)...", flush=True)
+print("Computing train stats (year-by-year)...", flush=True)
 for yr, yr_indices in train_by_year.items():
     print(f"  Stats {yr}: {len(yr_indices)} timesteps", flush=True)
     sub_X = dataset_cnn[feature_name].isel(time=yr_indices).load()
     sub_y = dataset_cnn[output_name].isel(time=yr_indices).load()
-    months_arr = sub_X.time.dt.month.values  # shape (T,)
+    months_arr = sub_X.time.dt.month.values
 
     for m_idx in range(1, 13):
         mask = (months_arr == m_idx)
@@ -207,7 +194,6 @@ for yr, yr_indices in train_by_year.items():
             X_sum_sq[m_idx-1, vi] += (v_fin**2).sum()
             X_count[m_idx-1, vi]  += len(v_fin)
 
-        # y stats — ltg counts per month
         yv = sub_y['ltg'].values[mask].astype(np.float64)
         yv_fin = yv[np.isfinite(yv)]
         y_sum[m_idx-1]    += yv_fin.sum()
@@ -216,53 +202,38 @@ for yr, yr_indices in train_by_year.items():
 
     del sub_X, sub_y; gc.collect()
 
-# Final mean/std for features (shape 12×n_vars)
 X_mean = X_sum    / X_count
 X_std  = np.sqrt(np.maximum(X_sum_sq / X_count - X_mean**2, 1e-12))
-
-# Final mean/std for ltg (shape 12,) — used to z-score target and unnormalise predictions
 y_mean = y_sum    / y_count
 y_std  = np.sqrt(np.maximum(y_sum_sq / y_count - y_mean**2, 1e-12))
-print(f"Train stats done.", flush=True)
+print("Train stats done.", flush=True)
 for m in [10, 11, 12]:
     print(f"  ltg month {m}: mean={y_mean[m-1]:.4f}  std={y_std[m-1]:.4f}", flush=True)
 
-# Weighted MSE: cells with lightning get POS_WEIGHT× more penalty
-# Drives the model to predict hotspots instead of collapsing to all-zeros
-POS_WEIGHT = 10.0
-
-def weighted_mse(outputs, targets):
-    weight = 1.0 + POS_WEIGHT * (targets > 0).float()
-    return (weight * (outputs - targets) ** 2).mean()
-
-criterion = weighted_mse
-
-# ── Load, normalise, and convert a split to tensors year-by-year ───────────────
+# ── Load, normalise, and convert a split to tensors (Jones z-score on both X and y) ──
 def norm_to_tensor(by_year_dict, label):
-    """Normalise and convert to float32 tensors, one year at a time."""
     print(f"\nNormalising + converting {label}...", flush=True)
     X_parts, y_parts = [], []
     for yr, yr_indices in by_year_dict.items():
         print(f"  {yr}: {len(yr_indices)} timesteps", flush=True)
         sub_X = dataset_cnn[feature_name].isel(time=yr_indices).load()
         sub_y = dataset_cnn[output_name].isel(time=yr_indices).load()
-        months_arr = sub_X.time.dt.month.values  # (T,)
+        months_arr = sub_X.time.dt.month.values
         T = len(months_arr)
 
-        # Stack features: (T, lat, lon, n_X_vars)
         X_arr = np.stack([sub_X[v].values for v in feature_name], axis=-1).astype(np.float32)
-        # log1p-transform ltg counts — compresses heavy tail, handles skew
-        y_arr = np.log1p(sub_y['ltg'].values).astype(np.float32)[:, :, :, np.newaxis]
+        y_arr = sub_y['ltg'].values.astype(np.float32)[:, :, :, np.newaxis]
         del sub_X, sub_y
 
-        # Normalise features per month; y is already binary — no normalisation needed
+        # Z-score normalise features and target per month (Jones)
         for t in range(T):
-            m = months_arr[t] - 1  # 0-indexed
+            m = months_arr[t] - 1
             X_arr[t] = ((X_arr[t].astype(np.float64) - X_mean[m]) / X_std[m]).astype(np.float32)
+            y_arr[t] = ((y_arr[t].astype(np.float64) - y_mean[m]) / y_std[m]).astype(np.float32)
 
         np.nan_to_num(X_arr, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+        np.nan_to_num(y_arr, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
 
-        # (T, lat, lon, C) → (T, C, lat, lon)
         X_parts.append(torch.tensor(X_arr.transpose(0, 3, 1, 2)))
         y_parts.append(torch.tensor(y_arr.transpose(0, 3, 1, 2)))
         del X_arr, y_arr; gc.collect()
@@ -273,7 +244,6 @@ tr_X_tensor,   tr_y_tensor   = norm_to_tensor(train_by_year, 'train')
 val_X_tensor,  val_y_tensor  = norm_to_tensor(val_by_year,   'val')
 test_X_tensor, test_y_tensor = norm_to_tensor(test_by_year,  'test')
 
-# Collect the sorted test times (used for saving predictions)
 test_times_sorted = np.concatenate(
     [all_times[idxs] for yr, idxs in test_by_year.items()]
 )
@@ -307,7 +277,7 @@ def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, 
         n_val_batches = math.ceil(val_size / batch_size)
         with torch.no_grad():
             for i in range(0, val_size, batch_size):
-                val_batch_inputs = val_inputs[i:i + batch_size]
+                val_batch_inputs  = val_inputs[i:i + batch_size]
                 val_batch_targets = val_targets[i:i + batch_size]
                 val_outputs = model(val_batch_inputs.to(DEVICE))
                 val_loss += criterion(val_outputs, val_batch_targets.to(DEVICE)).item()
@@ -334,11 +304,27 @@ with torch.no_grad():
     logit_parts = []
     for i in range(0, len(test_X_tensor), 128):
         logit_parts.append(model(test_X_tensor[i:i+128].to(DEVICE)).cpu())
-    logits = torch.cat(logit_parts, dim=0)   # raw logits, shape (T, 1, lat, lon)
+    logits = torch.cat(logit_parts, dim=0)   # (T, 1, lat, lon), z-score scale
 
-# Invert log1p → stroke counts; ReLU in model already ensures output >= 0
-log_pred_np   = logits.numpy().squeeze(1)               # (T, lat, lon), log1p scale
-pred_count_np = np.expm1(log_pred_np).clip(0)           # (T, lat, lon), stroke counts >= 0
+# ── Jones unnormalization ───────────────────────────────────────────────────────
+# Step 1: re-standardize predictions (remove their own global mean/std)
+# Step 2: scale by per-month train_y mean/std
+pred_norm_np = logits.numpy().squeeze(1)   # (T, lat, lon)
+
+pred_global_mean = pred_norm_np.mean()
+pred_global_std  = pred_norm_np.std()
+if pred_global_std < 1e-8:
+    pred_global_std = 1e-8
+
+pred_restd_np = (pred_norm_np - pred_global_mean) / pred_global_std   # re-standardised
+
+test_months   = pd.DatetimeIndex(test_times_sorted).month.values
+pred_count_np = np.zeros_like(pred_norm_np, dtype=np.float32)
+for t in range(len(test_times_sorted)):
+    m = test_months[t] - 1
+    pred_count_np[t] = (pred_restd_np[t] * y_std[m] + y_mean[m]).astype(np.float32)
+
+pred_count_np  = pred_count_np.clip(0)                    # Jones: clip negatives to 0
 pred_binary_np = (pred_count_np >= 1).astype(np.float32)  # binary: >= 1 stroke = positive
 
 T_test = len(test_times_sorted)
@@ -365,16 +351,14 @@ print("\nComputing test metrics...", flush=True)
 from scipy.ndimage import uniform_filter
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-# True labels for the test set
 test_obs_parts = []
 for yr, yr_indices in test_by_year.items():
     sub_y = dataset_cnn[output_name].isel(time=yr_indices).load()
     test_obs_parts.append(sub_y['ltg'].values.astype(np.float32))
     del sub_y; gc.collect()
-obs_count_np  = np.concatenate(test_obs_parts, axis=0)    # (T, lat, lon), raw counts
-obs_binary_np = (obs_count_np > 0).astype(np.float32)     # (T, lat, lon), 0 or 1
+obs_count_np  = np.concatenate(test_obs_parts, axis=0)
+obs_binary_np = (obs_count_np > 0).astype(np.float32)
 
-# Pixel-level classification metrics (flattened)
 obs_flat  = obs_binary_np.ravel().astype(int)
 pred_flat = pred_binary_np.ravel().astype(int)
 acc  = accuracy_score(obs_flat, pred_flat)
@@ -382,7 +366,6 @@ prec = precision_score(obs_flat, pred_flat, zero_division=0)
 rec  = recall_score(obs_flat, pred_flat, zero_division=0)
 f1   = f1_score(obs_flat, pred_flat, zero_division=0)
 
-# FSS: threshold obs at 1 stroke, pred at 1 stroke
 def compute_fss(obs, pred, threshold, window_size):
     obs_bin  = (obs  >= threshold).astype(int)
     pred_bin = (pred >= threshold).astype(int)
@@ -392,7 +375,7 @@ def compute_fss(obs, pred, threshold, window_size):
     den = np.sum(pred_frac**2 + obs_frac**2)
     return np.nan if den == 0 else 1 - num / den
 
-THRESHOLD, WINDOW = 1.0, 3   # >= 1 stroke = positive
+THRESHOLD, WINDOW = 1.0, 3
 fss_scores = [
     compute_fss(obs_count_np[i], pred_count_np[i], THRESHOLD, WINDOW)
     for i in range(T_test)
