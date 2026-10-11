@@ -372,13 +372,18 @@ pred_freq_2d = pred_np.mean(axis=0)
 x = obs_freq_2d.ravel()
 y = pred_freq_2d.ravel()
 
-# Keep only cells where BOTH obs and pred are strictly positive (needed for log scale)
-mask = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+# Keep only finite cells where at least one is non-zero
+mask = np.isfinite(x) & np.isfinite(y) & ((x > 0) | (y > 0))
 x, y = x[mask], y[mask]
 
-lx, ly = np.log10(x), np.log10(y)
+if len(x) < 10:
+    print("  Fig 4: too few non-zero points for KDE scatter — skipping.", flush=True)
+    import sys; sys.exit(0)
 
-# KDE on log-space grid
+# Work in linear space (values are 0–1 frequencies for binary model)
+lx, ly = x, y
+
+# KDE on grid
 MAX_KDE = 6000
 if len(lx) > MAX_KDE:
     idx_s = np.random.default_rng(42).choice(len(lx), MAX_KDE, replace=False)
@@ -388,31 +393,25 @@ else:
 
 kde = _kde(np.vstack([lxk, lyk]))
 
-lo = min(lxk.min(), lyk.min()) - 0.2
-hi = max(lxk.max(), lyk.max()) + 0.2
+lo = min(lxk.min(), lyk.min()) - 0.02
+hi = max(lxk.max(), lyk.max()) + 0.02
 xi = np.linspace(lo, hi, 100)
 yi = np.linspace(lo, hi, 100)
 Xi, Yi = np.meshgrid(xi, yi)
 Zi = kde(np.vstack([Xi.ravel(), Yi.ravel()])).reshape(Xi.shape)
 
-# Log-spaced contour levels (low=blue → high=red, matching Jones style)
+# Linear contour levels
 lev_min = max(Zi[Zi > 0].min(), Zi.max() * 1e-4)
-levels  = np.logspace(np.log10(lev_min), np.log10(Zi.max()), 20)
+levels  = np.linspace(lev_min, Zi.max(), 20)
 
 fig, ax = plt.subplots(figsize=(6, 5.5), constrained_layout=True)
-cf = ax.contourf(10**Xi, 10**Yi, Zi, levels=levels,
-                 cmap='jet', norm=mcolors.LogNorm())
+cf = ax.contourf(Xi, Yi, Zi, levels=levels, cmap='jet')
 cb = plt.colorbar(cf, ax=ax)
 cb.set_label('Point density', fontsize=10)
 
 # 1:1 line
-lim_lo = 10**lo
-lim_hi = 10**hi
-ax.plot([lim_lo, lim_hi], [lim_lo, lim_hi], 'k--', lw=1.5,
-        label=f'1:1 line  (r² = {r2_clim:.2f})')
-
-ax.set_xscale('log'); ax.set_yscale('log')
-ax.set_xlim(lim_lo, lim_hi); ax.set_ylim(lim_lo, lim_hi)
+ax.plot([lo, hi], [lo, hi], 'k--', lw=1.5, label=f'1:1 line  (r² = {r2_clim:.2f})')
+ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
 ax.set_xlabel('Observed lightning frequency (per grid cell)', fontsize=11)
 ax.set_ylabel('Predicted lightning frequency (per grid cell)', fontsize=11)
 ax.set_title('Observed vs Predicted Lightning Frequency\n'
