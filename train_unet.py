@@ -152,8 +152,8 @@ xdim_m = n_lon
 print(f"Model dims: zdim={zdim_m}, ydim={ydim_m}, xdim={xdim_m}", flush=True)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 model = SimpleCNN(zdim_m, ydim_m, xdim_m).to(DEVICE)
-criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val]).to(DEVICE))
 optimizer = optim.Adam(model.parameters(), lr=0.005)
+# criterion defined after stats loop once pos_weight_val is computed
 
 # ── Helper: group global time indices by year ──────────────────────────────────
 def group_by_year(indices, all_times):
@@ -223,6 +223,7 @@ for m in [10, 11, 12]:
 # pos_weight = neg / pos (how many times rarer lightning is)
 pos_weight_val = float(y_neg / max(y_pos, 1))
 print(f"  pos_weight (neg/pos ratio) = {pos_weight_val:.2f}", flush=True)
+criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val]).to(DEVICE))
 
 # ── Load, normalise, and convert a split to tensors (Jones z-score on both X and y) ──
 def norm_to_tensor(by_year_dict, label):
