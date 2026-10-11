@@ -249,7 +249,7 @@ cbar_ax = fig.add_axes([0.90, 0.05, 0.018, 0.85])
 cb = fig.colorbar(last_im, cax=cbar_ax)
 cb.set_label('Relative lightning density  (0–1, each panel normalized)', fontsize=10)
 
-fig.suptitle('Monthly Lightning Frequency vs Predicted Probability — Test 2024–2025',
+fig.suptitle('Monthly Lightning Density — Observed vs Predicted — Test 2024–2025',
              fontsize=13, y=0.97)
 fig.savefig(os.path.join(FIG_DIR, 'fig1_monthly_maps.png'), dpi=150, bbox_inches='tight')
 plt.close(fig)
