@@ -46,4 +46,17 @@ ond_mask = times.month.isin([10, 11, 12])
 for var in ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd', 'vertical_velocity_500hPa']:
     if var in ds.data_vars:
         v = ds[var].values[ond_mask]
-        print(f"  {var:30s}: min={v.min():.3f}  max={v.max():.3f}  mean={v.mean():.3f}  NaN={np.isnan(v).sum()}")
+        nans = int(np.isnan(v).sum())
+        pct  = 100 * nans / v.size
+        print(f"  {var:30s}: min={np.nanmin(v):.3f}  max={np.nanmax(v):.3f}  mean={np.nanmean(v):.3f}  NaN={nans} ({pct:.1f}%)")
+
+print("\n=== WCD NaN DETAIL ===")
+v = ds['wcd'].values[ond_mask]
+total = v.size
+nans  = int(np.isnan(v).sum())
+print(f"  wcd OND pixels  : {total:,}")
+print(f"  NaN count       : {nans:,}  ({100*nans/total:.1f}%)")
+print(f"  Non-NaN count   : {total-nans:,}  ({100*(total-nans)/total:.1f}%)")
+if total - nans > 0:
+    print(f"  Non-NaN min/max : {np.nanmin(v):.1f} / {np.nanmax(v):.1f}")
+    print(f"  Non-NaN mean    : {np.nanmean(v):.1f}")
