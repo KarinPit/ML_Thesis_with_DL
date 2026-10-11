@@ -73,14 +73,14 @@ def compute_fss(obs, pred, threshold, window_size):
     den = np.sum(pred_frac**2 + obs_frac**2)
     return np.nan if den == 0 else 1 - num / den
 
-THRESHOLD    = 1.0   # >= 1 stroke = lightning event
+THRESHOLD    = 0.5   # binary: obs>=1 stroke or pred>=0.5 probability
 WINDOW_SIZE  = 3
 WINDOW_SIZES = [1, 3, 5]
 
 print("Computing FSS...", flush=True)
 fss_by_window = {}
 for w in WINDOW_SIZES:
-    scores = [compute_fss(obs_np[i], prob_np[i], THRESHOLD, w)
+    scores = [compute_fss(obs_binary_np[i], pred_np[i], THRESHOLD, w)
               for i in range(len(test_times))]
     fss_by_window[w] = np.array(scores)
 
@@ -193,11 +193,11 @@ OND_MONTHS = [10, 11, 12]
 OND_LABELS = ['October', 'November', 'December']
 months_arr = pd.DatetimeIndex(test_times).month
 
-# Shared colorscale: 99th percentile of observed counts (robust to outliers)
-all_monthly_obs  = np.stack([obs_np[months_arr == m].mean(axis=0)  for m in OND_MONTHS])
-all_monthly_prob = np.stack([prob_np[months_arr == m].mean(axis=0) for m in OND_MONTHS])
+# Show lightning frequency (fraction of timesteps with lightning) — same 0–1 scale for both
+all_monthly_obs  = np.stack([obs_binary_np[months_arr == m].mean(axis=0) for m in OND_MONTHS])
+all_monthly_prob = np.stack([pred_np[months_arr == m].mean(axis=0)       for m in OND_MONTHS])
 vmax = float(np.nanpercentile(all_monthly_obs[all_monthly_obs > 0], 99)) if np.any(all_monthly_obs > 0) else 1.0
-print(f"  Monthly maps vmax (99th pct of obs) = {vmax:.4f}", flush=True)
+print(f"  Monthly maps vmax (99th pct of obs freq) = {vmax:.4f}", flush=True)
 
 VMIN_DISPLAY = 0.02   # values below this render as white (effectively "no signal")
 nrows = len(OND_MONTHS)
@@ -225,8 +225,8 @@ last_im = None
 for row, (m, mlabel) in enumerate(zip(OND_MONTHS, OND_LABELS)):
     idx_m = np.where(months_arr == m)[0]
 
-    raw_obs  = obs_np[idx_m].mean(axis=0)
-    raw_prob = prob_np[idx_m].mean(axis=0)
+    raw_obs  = obs_binary_np[idx_m].mean(axis=0)   # fraction of timesteps with lightning
+    raw_prob = pred_np[idx_m].mean(axis=0)          # fraction of timesteps predicted positive
 
     # Same Gaussian smoothing on both panels for fair visual comparison
     raw_obs_sm  = gaussian_filter(raw_obs,  sigma=SMOOTH_SIGMA)
@@ -249,7 +249,7 @@ for row, (m, mlabel) in enumerate(zip(OND_MONTHS, OND_LABELS)):
 # Single shared colorbar on the far right
 cbar_ax = fig.add_axes([0.90, 0.05, 0.018, 0.85])
 cb = fig.colorbar(last_im, cax=cbar_ax)
-cb.set_label('Mean stroke count per 12h per grid cell', fontsize=10)
+cb.set_label('Lightning frequency (fraction of 12h periods)', fontsize=10)
 
 fig.suptitle('Monthly Lightning Density — Observed vs Predicted — Test 2024–2025',
              fontsize=13, y=0.97)
@@ -276,7 +276,7 @@ for i, w in enumerate(WINDOW_SIZES):
     errs = []
     for m in OND_MONTHS:
         idx_m  = np.where(months_arr == m)[0]
-        scores = [compute_fss(obs_np[t], prob_np[t], THRESHOLD, w) for t in idx_m]
+        scores = [compute_fss(obs_binary_np[t], pred_np[t], THRESHOLD, w) for t in idx_m]
         valid  = [s for s in scores if np.isfinite(s)]
         vals.append(np.mean(valid) if valid else np.nan)
         errs.append(np.std(valid) / np.sqrt(len(valid)) if len(valid) > 1 else 0)

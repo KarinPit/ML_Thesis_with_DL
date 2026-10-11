@@ -376,9 +376,10 @@ def compute_fss(obs, pred, threshold, window_size):
     den = np.sum(pred_frac**2 + obs_frac**2)
     return np.nan if den == 0 else 1 - num / den
 
-THRESHOLD, WINDOW = 1.0, 3
+# FSS uses binary arrays (obs>=1 stroke, pred already thresholded at 0.5)
+THRESHOLD, WINDOW = 0.5, 3
 fss_scores = [
-    compute_fss(obs_count_np[i], pred_count_np[i], THRESHOLD, WINDOW)
+    compute_fss(obs_binary_np[i], pred_binary_np[i], THRESHOLD, WINDOW)
     for i in range(T_test)
 ]
 fss_arr   = np.array(fss_scores)
