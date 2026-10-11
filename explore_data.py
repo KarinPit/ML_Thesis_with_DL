@@ -26,6 +26,29 @@ from dash import dcc, html, Input, Output, callback
 import plotly.graph_objects as go
 import plotly.express as px
 
+# ── Country borders (via cartopy Natural Earth data) ───────────────────────────
+def _load_country_borders():
+    try:
+        import cartopy.io.shapereader as shpreader
+        shpfile = shpreader.natural_earth(resolution='110m', category='cultural',
+                                          name='admin_0_countries')
+        reader  = shpreader.Reader(shpfile)
+        lons, lats = [], []
+        for record in reader.records():
+            geom = record.geometry
+            polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+            for poly in polys:
+                xs, ys = poly.exterior.xy
+                lons.extend(list(xs) + [None])
+                lats.extend(list(ys) + [None])
+        print("Country borders loaded from cartopy.", flush=True)
+        return lons, lats
+    except Exception as e:
+        print(f"cartopy borders unavailable ({e}) — install with: pip install cartopy", flush=True)
+        return [], []
+
+BORDER_LONS, BORDER_LATS = _load_country_borders()
+
 # ── Load data ──────────────────────────────────────────────────────────────────
 DATA_PATH = '/home/ec2-user/ML_Thesis_with_DL/data/jones_israel_all_years.nc'
 if not os.path.exists(DATA_PATH):
@@ -109,7 +132,8 @@ app.layout = html.Div([
 )
 def update(var, t_idx):
     ts  = all_times[t_idx]
-    arr = ds_12h[var].isel(time=t_idx).values   # (lat, lon)
+    arr = ds_12h[var].isel(time=t_idx).values.copy()   # (lat, lon)
+    arr = np.nan_to_num(arr, nan=0.0)   # replace NaNs with 0 for display
 
     # ── Stats ──────────────────────────────────────────────────────────────────
     flat     = arr.ravel()
@@ -160,6 +184,16 @@ def update(var, t_idx):
         hoverongaps=False,
         hovertemplate='lon: %{x:.2f}°<br>lat: %{y:.2f}°<br>value: %{z:.4f}<extra></extra>',
     ))
+
+    # Overlay country borders
+    if BORDER_LONS:
+        fig.add_trace(go.Scatter(
+            x=BORDER_LONS, y=BORDER_LATS,
+            mode='lines',
+            line=dict(color='black', width=0.8),
+            hoverinfo='skip',
+            showlegend=False,
+        ))
 
     fig.update_layout(
         title=f'{var}  —  {ts.strftime("%Y-%m-%d %H:%M UTC")}',
