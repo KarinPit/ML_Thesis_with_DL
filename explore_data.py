@@ -65,7 +65,7 @@ ds_12h  = xr.merge([ds_feat, ds_ltg])
 
 # resample() fills gaps between years with NaN rows — drop them by keeping only Sep-Dec
 season_mask = ds_12h.time.dt.month.isin([9, 10, 11, 12])
-ds_12h = ds_12h.isel(time=season_mask.values)
+ds_12h = ds_12h.isel(time=season_mask.values).sortby('time')
 
 all_vars  = list(ds_12h.data_vars)
 all_times = pd.DatetimeIndex(ds_12h.time.values)
