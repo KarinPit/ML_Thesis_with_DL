@@ -152,7 +152,7 @@ xdim_m = n_lon
 print(f"Model dims: zdim={zdim_m}, ydim={ydim_m}, xdim={xdim_m}", flush=True)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 model = SimpleCNN(zdim_m, ydim_m, xdim_m).to(DEVICE)
-criterion = nn.MSELoss()
+criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.005)
 
 # ── Helper: group global time indices by year ──────────────────────────────────
@@ -225,17 +225,16 @@ def norm_to_tensor(by_year_dict, label):
         T = len(months_arr)
 
         X_arr = np.stack([sub_X[v].values for v in feature_name], axis=-1).astype(np.float32)
-        y_arr = sub_y['ltg'].values.astype(np.float32)[:, :, :, np.newaxis]
+        # Binary target: 1 if any lightning, 0 otherwise
+        y_arr = (sub_y['ltg'].values > 0).astype(np.float32)[:, :, :, np.newaxis]
         del sub_X, sub_y
 
-        # Z-score normalise features and target per month (Jones)
+        # Z-score normalise features per month; target is already binary
         for t in range(T):
             m = months_arr[t] - 1
             X_arr[t] = ((X_arr[t].astype(np.float64) - X_mean[m]) / X_std[m]).astype(np.float32)
-            y_arr[t] = ((y_arr[t].astype(np.float64) - y_mean[m]) / y_std[m]).astype(np.float32)
 
         np.nan_to_num(X_arr, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-        np.nan_to_num(y_arr, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
 
         X_parts.append(torch.tensor(X_arr.transpose(0, 3, 1, 2)))
         y_parts.append(torch.tensor(y_arr.transpose(0, 3, 1, 2)))
@@ -311,28 +310,12 @@ with torch.no_grad():
     logit_parts = []
     for i in range(0, len(test_X_tensor), 128):
         logit_parts.append(model(test_X_tensor[i:i+128].to(DEVICE)).cpu())
-    logits = torch.cat(logit_parts, dim=0)   # (T, 1, lat, lon), z-score scale
+    logits = torch.cat(logit_parts, dim=0)   # (T, 1, lat, lon), raw logits
 
-# ── Jones unnormalization ───────────────────────────────────────────────────────
-# Step 1: re-standardize predictions (remove their own global mean/std)
-# Step 2: scale by per-month train_y mean/std
-pred_norm_np = logits.numpy().squeeze(1)   # (T, lat, lon)
-
-pred_global_mean = pred_norm_np.mean()
-pred_global_std  = pred_norm_np.std()
-if pred_global_std < 1e-8:
-    pred_global_std = 1e-8
-
-pred_restd_np = (pred_norm_np - pred_global_mean) / pred_global_std   # re-standardised
-
-test_months   = pd.DatetimeIndex(test_times_sorted).month.values
-pred_count_np = np.zeros_like(pred_norm_np, dtype=np.float32)
-for t in range(len(test_times_sorted)):
-    m = test_months[t] - 1
-    pred_count_np[t] = (pred_restd_np[t] * y_std[m] + y_mean[m]).astype(np.float32)
-
-pred_count_np  = pred_count_np.clip(0)                    # Jones: clip negatives to 0
-pred_binary_np = (pred_count_np >= 1).astype(np.float32)  # binary: >= 1 stroke = positive
+# ── Binary inference: sigmoid → probability, threshold at 0.5 ─────────────────
+prob_np        = torch.sigmoid(logits).numpy().squeeze(1)   # (T, lat, lon), 0–1
+pred_count_np  = prob_np                                     # saved as "prob" in output
+pred_binary_np = (prob_np >= 0.5).astype(np.float32)        # binary prediction
 
 T_test = len(test_times_sorted)
 
