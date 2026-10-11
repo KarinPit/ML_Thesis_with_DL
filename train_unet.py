@@ -54,8 +54,10 @@ LON_MAX = 39.0   # °E  — eastern boundary
 # ── Load dataset ───────────────────────────────────────────────────────────────
 ds_daily = xr.open_dataset('jones_israel_all_years.nc')
 
-# Apply geographic crop before divisibility trim
-ds_daily = ds_daily.sel(lat=slice(LAT_MIN, LAT_MAX), lon=slice(LON_MIN, LON_MAX))
+# Apply geographic crop before divisibility trim (works for both asc and desc lat/lon)
+lat_mask = (ds_daily.lat >= LAT_MIN) & (ds_daily.lat <= LAT_MAX)
+lon_mask = (ds_daily.lon >= LON_MIN) & (ds_daily.lon <= LON_MAX)
+ds_daily = ds_daily.isel(lat=lat_mask.values, lon=lon_mask.values)
 print(f"Geographic crop: lat {float(ds_daily.lat.min()):.2f}–{float(ds_daily.lat.max()):.2f}°N, "
       f"lon {float(ds_daily.lon.min()):.2f}–{float(ds_daily.lon.max()):.2f}°E", flush=True)
 
