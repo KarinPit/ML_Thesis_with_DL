@@ -193,12 +193,11 @@ OND_MONTHS = [10, 11, 12]
 OND_LABELS = ['October', 'November', 'December']
 months_arr = pd.DatetimeIndex(test_times).month
 
-# Normalise obs and pred each by their own max (different scales: counts vs counts)
+# Shared colorscale: 99th percentile of observed counts (robust to outliers)
 all_monthly_obs  = np.stack([obs_np[months_arr == m].mean(axis=0)  for m in OND_MONTHS])
 all_monthly_prob = np.stack([prob_np[months_arr == m].mean(axis=0) for m in OND_MONTHS])
-obs_max  = np.nanmax(all_monthly_obs)   if np.nanmax(all_monthly_obs)  > 0 else 1.0
-pred_max = np.nanmax(all_monthly_prob)  if np.nanmax(all_monthly_prob) > 0 else 1.0
-print(f"  Monthly maps: obs_max={obs_max:.4f}, pred_max={pred_max:.4f}", flush=True)
+vmax = float(np.nanpercentile(all_monthly_obs[all_monthly_obs > 0], 99)) if np.any(all_monthly_obs > 0) else 1.0
+print(f"  Monthly maps vmax (99th pct of obs) = {vmax:.4f}", flush=True)
 
 VMIN_DISPLAY = 0.02   # values below this render as white (effectively "no signal")
 nrows = len(OND_MONTHS)
@@ -233,21 +232,22 @@ for row, (m, mlabel) in enumerate(zip(OND_MONTHS, OND_LABELS)):
     raw_obs_sm  = gaussian_filter(raw_obs,  sigma=SMOOTH_SIGMA)
     raw_prob_sm = gaussian_filter(raw_prob, sigma=SMOOTH_SIGMA)
 
-    obs_plot  = np.where(raw_obs_sm  > 0, raw_obs_sm  / obs_max,  np.nan)
-    prob_plot = np.where(raw_prob_sm > 0, raw_prob_sm / pred_max, np.nan)
+    # Show actual stroke counts; mask true zeros as white
+    obs_plot  = np.where(raw_obs_sm  > 0, raw_obs_sm,  np.nan)
+    prob_plot = np.where(raw_prob_sm > 0, raw_prob_sm, np.nan)
 
-    last_im = draw_map(fig, axs[row, 0], obs_plot,  VMIN_DISPLAY, 1, cmap_ltg,
+    last_im = draw_map(fig, axs[row, 0], obs_plot,  0, vmax, cmap_ltg,
                        proj=proj, add_cb=False)
     axs[row, 0].set_title(f'{mlabel} — Observed (WWLN)', fontsize=11, pad=3)
 
-    draw_map(fig, axs[row, 1], prob_plot, VMIN_DISPLAY, 1, cmap_ltg,
+    draw_map(fig, axs[row, 1], prob_plot, 0, vmax, cmap_ltg,
              proj=proj, add_cb=False)
     axs[row, 1].set_title(f'{mlabel} — U-Net Predicted Density', fontsize=11, pad=3)
 
 # Single shared colorbar on the far right
 cbar_ax = fig.add_axes([0.90, 0.05, 0.018, 0.85])
 cb = fig.colorbar(last_im, cax=cbar_ax)
-cb.set_label('Relative lightning density  (0–1, each panel normalized)', fontsize=10)
+cb.set_label('Mean stroke count per 12h per grid cell', fontsize=10)
 
 fig.suptitle('Monthly Lightning Density — Observed vs Predicted — Test 2024–2025',
              fontsize=13, y=0.97)
