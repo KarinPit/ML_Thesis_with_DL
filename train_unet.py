@@ -114,7 +114,7 @@ class SimpleCNN(nn.Module):
         self.decoder0 = self.decoder_block(16, 32)
         self.outputs = nn.Sequential(
             nn.Conv2d(32, 1, kernel_size=1, padding=0),
-            nn.ReLU()  # Ensures non-negative output (log1p counts are always >= 0)
+            # No ReLU — normalized targets can be negative
         )
 
     def conv_block(self, in_channels, out_channels):
@@ -182,9 +182,10 @@ n_y_vars = len(output_name)
 X_sum    = np.zeros((n_months, n_X_vars), dtype=np.float64)
 X_sum_sq = np.zeros((n_months, n_X_vars), dtype=np.float64)
 X_count  = np.zeros((n_months, n_X_vars), dtype=np.float64)
-# For binary target: count positive (ltg > 0) and total pixels to compute pos_weight
-y_pos_count = 0.0
-y_tot_count = 0.0
+# y stats for z-score normalisation of ltg (Jones approach)
+y_sum    = np.zeros(n_months, dtype=np.float64)
+y_sum_sq = np.zeros(n_months, dtype=np.float64)
+y_count  = np.zeros(n_months, dtype=np.float64)
 
 print("Computing train stats (year-by-year to save RAM)...", flush=True)
 for yr, yr_indices in train_by_year.items():
@@ -204,10 +205,12 @@ for yr, yr_indices in train_by_year.items():
             X_sum_sq[m_idx-1, vi] += (v_fin**2).sum()
             X_count[m_idx-1, vi]  += len(v_fin)
 
-    # Count positives for pos_weight (over all pixels in this year)
-    ltg_vals = sub_y['ltg'].values
-    y_pos_count += float((ltg_vals > 0).sum())
-    y_tot_count += float(np.isfinite(ltg_vals).sum())
+        # y stats — ltg counts per month
+        yv = sub_y['ltg'].values[mask].astype(np.float64)
+        yv_fin = yv[np.isfinite(yv)]
+        y_sum[m_idx-1]    += yv_fin.sum()
+        y_sum_sq[m_idx-1] += (yv_fin**2).sum()
+        y_count[m_idx-1]  += len(yv_fin)
 
     del sub_X, sub_y; gc.collect()
 
@@ -215,24 +218,15 @@ for yr, yr_indices in train_by_year.items():
 X_mean = X_sum    / X_count
 X_std  = np.sqrt(np.maximum(X_sum_sq / X_count - X_mean**2, 1e-12))
 
-# pos_weight = (# negative pixels) / (# positive pixels)
-# Tells BCEWithLogitsLoss how much more to penalise missing a positive
-pos_rate = y_pos_count / y_tot_count
-print(f"Train stats done.  pos_rate={pos_rate:.4f}  ({y_pos_count:.0f} / {y_tot_count:.0f} pixels)", flush=True)
+# Final mean/std for ltg (shape 12,) — used to z-score target and unnormalise predictions
+y_mean = y_sum    / y_count
+y_std  = np.sqrt(np.maximum(y_sum_sq / y_count - y_mean**2, 1e-12))
+print(f"Train stats done.", flush=True)
+for m in [10, 11, 12]:
+    print(f"  ltg month {m}: mean={y_mean[m-1]:.4f}  std={y_std[m-1]:.4f}", flush=True)
 
-# Weighted MSE: pixels with lightning get higher weight
-# weight = log1p(target) + 1  →  zero pixels weight=1, high-count pixels weight up to ~7
-LIGHTNING_WEIGHT = 10.0   # extra multiplier on any pixel with lightning (tune if needed)
-
-def weighted_mse_loss(pred, target):
-    weights = torch.where(target > 0,
-                          torch.full_like(target, LIGHTNING_WEIGHT),
-                          torch.ones_like(target))
-    return (weights * (pred - target) ** 2).mean()
-
-criterion = weighted_mse_loss
-
-print("Train stats done.", flush=True)
+# Plain MSE on z-score normalised targets (Jones approach)
+criterion = nn.MSELoss()
 
 # ── Load, normalise, and convert a split to tensors year-by-year ───────────────
 def norm_to_tensor(by_year_dict, label):
@@ -248,8 +242,13 @@ def norm_to_tensor(by_year_dict, label):
 
         # Stack features: (T, lat, lon, n_X_vars)
         X_arr = np.stack([sub_X[v].values for v in feature_name], axis=-1).astype(np.float32)
-        # Log1p-transform stroke counts — shape (T, lat, lon, 1)
-        y_arr = np.log1p(sub_y['ltg'].values).astype(np.float32)[:, :, :, np.newaxis]
+        # Z-score normalise ltg per month (Jones approach) — shape (T, lat, lon, 1)
+        ltg_raw = sub_y['ltg'].values.astype(np.float64)
+        y_arr = np.zeros_like(ltg_raw, dtype=np.float32)
+        for t in range(T):
+            m = months_arr[t] - 1
+            y_arr[t] = ((ltg_raw[t] - y_mean[m]) / y_std[m]).astype(np.float32)
+        y_arr = np.nan_to_num(y_arr, nan=0.0)[:, :, :, np.newaxis]
         del sub_X, sub_y
 
         # Normalise features per month; y is already binary — no normalisation needed
@@ -333,9 +332,14 @@ with torch.no_grad():
         logit_parts.append(model(test_X_tensor[i:i+128].to(DEVICE)).cpu())
     logits = torch.cat(logit_parts, dim=0)   # raw logits, shape (T, 1, lat, lon)
 
-# Model outputs log1p(count) — invert to get predicted stroke counts
-log_pred_np    = logits.numpy().squeeze(1)              # (T, lat, lon), log1p scale
-pred_count_np  = np.expm1(log_pred_np).clip(0)         # (T, lat, lon), stroke counts >= 0
+# Unnormalise predictions back to stroke count space (Jones approach)
+pred_norm_np  = logits.numpy().squeeze(1)               # (T, lat, lon), z-score scale
+test_months   = pd.DatetimeIndex(test_times_sorted).month.values
+pred_count_np = np.zeros_like(pred_norm_np, dtype=np.float32)
+for t in range(len(test_times_sorted)):
+    m = test_months[t] - 1
+    pred_count_np[t] = (pred_norm_np[t] * y_std[m] + y_mean[m]).astype(np.float32)
+pred_count_np  = pred_count_np.clip(0)                  # clip negatives to 0 (Jones)
 pred_binary_np = (pred_count_np >= 1).astype(np.float32)  # binary: >= 1 stroke = positive
 
 T_test = len(test_times_sorted)
