@@ -43,8 +43,21 @@ os.chdir('/home/ec2-user/ML_Thesis_with_DL/data/')
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Using device: {DEVICE}", flush=True)
 
+# ── Geographic crop (set to None to use full domain) ──────────────────────────
+# Full domain: lat 28–43.25°N, lon 0–39.25°E
+# Tip: raise LON_MIN to ~10 to cut out the Sahara; raise LAT_MIN to ~30 to drop deep Negev/desert
+LAT_MIN = 30.0   # °N  — southern boundary
+LAT_MAX = 43.0   # °N  — northern boundary
+LON_MIN = 10.0   # °E  — western boundary (0 = full domain incl. Sahara)
+LON_MAX = 39.0   # °E  — eastern boundary
+
 # ── Load dataset ───────────────────────────────────────────────────────────────
 ds_daily = xr.open_dataset('jones_israel_all_years.nc')
+
+# Apply geographic crop before divisibility trim
+ds_daily = ds_daily.sel(lat=slice(LAT_MIN, LAT_MAX), lon=slice(LON_MIN, LON_MAX))
+print(f"Geographic crop: lat {float(ds_daily.lat.min()):.2f}–{float(ds_daily.lat.max()):.2f}°N, "
+      f"lon {float(ds_daily.lon.min()):.2f}–{float(ds_daily.lon.max()):.2f}°E", flush=True)
 
 # Trim to dimensions divisible by 4 (required for encoder/decoder pooling)
 n_lat = (ds_daily.sizes['lat'] // 4) * 4
@@ -54,7 +67,7 @@ print(f"Grid trimmed to: {n_lat} × {n_lon}", flush=True)
 
 dataset_cnn = ds_daily
 
-feature_name = ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd']
+feature_name = ['cape', 'precipitation', 'rh', 'shear', 't2m', 'wcd', 'vertical_velocity_500hPa']
 output_name  = ['ltg']
 
 # ── Temporal split: 2024-2025 = test, rest = train+val ────────────────────────
@@ -136,7 +149,7 @@ class SimpleCNN(nn.Module):
         outputs = self.outputs(decoder0)
         return outputs
 
-model     = SimpleCNN(zdim, ydim, xdim).to(DEVICE)
+model = SimpleCNN(zdim, ydim, xdim).to(DEVICE)
 optimizer = optim.Adam(model.parameters(), lr=0.005)
 
 # ── Normalisation (Jones: per-month z-score on features only) ─────────────────
@@ -154,11 +167,12 @@ test_dataset_cnn_X_norm  = zscore(test_dataset_cnn_X,  train_X_mean, train_X_std
 
 # ── BCE loss with pos_weight (sqrt of neg/pos ratio balances precision/recall) ─
 y_train_flat  = (train_dataset_cnn_y['ltg'].values > 0).ravel()
-n_pos         = float(y_train_flat.sum())
-n_neg         = float((~y_train_flat.astype(bool)).sum())
+n_pos = float(y_train_flat.sum())
+n_neg = float((~y_train_flat.astype(bool)).sum())
 pos_weight_val = float(np.sqrt(n_neg / n_pos))
 print(f"pos_weight (sqrt): {pos_weight_val:.2f}  (neg/pos ratio: {n_neg/n_pos:.1f})", flush=True)
-criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val], device=DEVICE))
+# criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val], device=DEVICE))
+criterion = nn.BCEWithLogitsLoss()
 
 # ── Convert to tensors ─────────────────────────────────────────────────────────
 print("Converting to tensors...", flush=True)
@@ -216,7 +230,7 @@ def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, 
             best_val_loss    = val_loss
             patience_counter = 0
             torch.save(model.state_dict(), ckpt_path)
-            print(f"  ✓ best model saved (val={val_loss:.6f})", flush=True)
+            # print(f"  ✓ best model saved (val={val_loss:.6f})", flush=True)
         else:
             patience_counter += 1
             if patience_counter >= patience:
