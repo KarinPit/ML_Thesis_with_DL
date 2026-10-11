@@ -106,7 +106,7 @@ app.layout = html.Div([
                     max=len(all_times) - 1,
                     step=1,
                     value=0,
-                    marks={i: str(all_times[i].date()) for i in range(0, len(all_times), max(1, len(all_times)//10))},
+                    marks={i: str(i) for i in range(0, len(all_times), max(1, len(all_times)//10))},
                     tooltip={"placement": "bottom", "always_visible": True},
                 ),
             ], style={'width': '700px'}),
