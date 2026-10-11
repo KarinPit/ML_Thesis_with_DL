@@ -227,8 +227,15 @@ print(f"Train stats done.", flush=True)
 for m in [10, 11, 12]:
     print(f"  ltg month {m}: mean={y_mean[m-1]:.4f}  std={y_std[m-1]:.4f}", flush=True)
 
-# Plain MSE on z-score normalised targets (Jones approach)
-criterion = nn.MSELoss()
+# Weighted MSE: cells with lightning get POS_WEIGHT× more penalty
+# Drives the model to predict hotspots instead of collapsing to all-zeros
+POS_WEIGHT = 10.0
+
+def weighted_mse(outputs, targets):
+    weight = 1.0 + POS_WEIGHT * (targets > 0).float()
+    return (weight * (outputs - targets) ** 2).mean()
+
+criterion = weighted_mse
 
 # ── Load, normalise, and convert a split to tensors year-by-year ───────────────
 def norm_to_tensor(by_year_dict, label):
