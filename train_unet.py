@@ -220,8 +220,17 @@ X_std  = np.sqrt(np.maximum(X_sum_sq / X_count - X_mean**2, 1e-12))
 pos_rate = y_pos_count / y_tot_count
 print(f"Train stats done.  pos_rate={pos_rate:.4f}  ({y_pos_count:.0f} / {y_tot_count:.0f} pixels)", flush=True)
 
-# MSE loss on log1p-transformed stroke counts
-criterion = nn.MSELoss()
+# Weighted MSE: pixels with lightning get higher weight
+# weight = log1p(target) + 1  →  zero pixels weight=1, high-count pixels weight up to ~7
+LIGHTNING_WEIGHT = 10.0   # extra multiplier on any pixel with lightning (tune if needed)
+
+def weighted_mse_loss(pred, target):
+    weights = torch.where(target > 0,
+                          torch.full_like(target, LIGHTNING_WEIGHT),
+                          torch.ones_like(target))
+    return (weights * (pred - target) ** 2).mean()
+
+criterion = weighted_mse_loss
 
 print("Train stats done.", flush=True)
 
