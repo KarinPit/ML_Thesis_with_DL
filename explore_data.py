@@ -182,8 +182,12 @@ def update(var, t_idx):
     # ── Map ────────────────────────────────────────────────────────────────────
     colorscale = 'YlOrRd' if var == 'ltg' else 'RdBu_r'
 
+    # Zero → NaN so zeros render as transparent (no color)
+    plot_arr = arr.astype(float).copy()
+    plot_arr[plot_arr == 0] = np.nan
+
     fig = go.Figure(go.Heatmap(
-        z=arr,
+        z=plot_arr,
         x=lons,
         y=lats,
         colorscale=colorscale,
