@@ -57,8 +57,9 @@ if not os.path.exists(DATA_PATH):
 print("Loading dataset...", flush=True)
 ds = xr.open_dataset(DATA_PATH)
 
-# Resample to 12-hourly to keep things manageable
-feature_vars = ['cape', 'precipitation', 'lsm', 'rh', 'shear', 't2m', 'wcd', 'vertical_velocity_500hPa']
+# Resample to 12-hourly — auto-detect all variables, sum ltg, mean everything else
+feature_vars = [v for v in ds.data_vars if v != 'ltg']
+print(f"Variables found in dataset: {feature_vars}", flush=True)
 ds_feat = ds[feature_vars].resample(time='12h').mean()
 ds_ltg  = ds[['ltg']].resample(time='12h').sum()
 ds_12h  = xr.merge([ds_feat, ds_ltg])
