@@ -161,15 +161,15 @@ test_dataset_cnn_y_norm  = zscore(test_dataset_cnn_y,  train_y_mean, train_y_std
 # ── Convert to tensors ─────────────────────────────────────────────────────────
 print("Converting to tensors...", flush=True)
 def to_tensor(ds_norm):
+    """Convert normalised xarray dataset to CPU tensor — batches moved to GPU inside training loop."""
     arr = np.moveaxis(np.array(ds_norm.to_array()), 0, -1)
-    return torch.tensor(arr, dtype=torch.float32).permute(0, 3, 1, 2).to(DEVICE)
+    return torch.tensor(arr, dtype=torch.float32).permute(0, 3, 1, 2)  # stays on CPU
 
-tr_X_tensor   = to_tensor(train_dataset_cnn_X_norm)
-val_X_tensor  = to_tensor(val_dataset_cnn_X_norm)
-test_X_tensor = to_tensor(test_dataset_cnn_X_norm)
-tr_y_tensor   = to_tensor(train_dataset_cnn_y_norm)
-val_y_tensor  = to_tensor(val_dataset_cnn_y_norm)
-test_y_tensor = to_tensor(test_dataset_cnn_y_norm)
+# Load train + val into RAM; test loaded after training to save GPU memory
+tr_X_tensor  = to_tensor(train_dataset_cnn_X_norm)
+val_X_tensor = to_tensor(val_dataset_cnn_X_norm)
+tr_y_tensor  = to_tensor(train_dataset_cnn_y_norm)
+val_y_tensor = to_tensor(val_dataset_cnn_y_norm)
 
 # ── Training ───────────────────────────────────────────────────────────────────
 def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, val_targets,
@@ -185,8 +185,8 @@ def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, 
         permutation = torch.randperm(dataset_size)
         for i in range(0, dataset_size, batch_size):
             indices = permutation[i:i + batch_size]
-            batch_inputs  = train_inputs[indices]
-            batch_targets = train_targets[indices]
+            batch_inputs  = train_inputs[indices].to(DEVICE)
+            batch_targets = train_targets[indices].to(DEVICE)
             optimizer.zero_grad()
             loss = criterion(model(batch_inputs), batch_targets)
             loss.backward()
@@ -198,8 +198,8 @@ def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, 
         n_val_batches = math.ceil(val_size / batch_size)
         with torch.no_grad():
             for i in range(0, val_size, batch_size):
-                val_out  = model(val_inputs[i:i + batch_size])
-                val_loss += criterion(val_out, val_targets[i:i + batch_size]).item()
+                val_out  = model(val_inputs[i:i + batch_size].to(DEVICE))
+                val_loss += criterion(val_out, val_targets[i:i + batch_size].to(DEVICE)).item()
         val_loss /= max(1, n_val_batches)
 
         print(f'Epoch {epoch+1}/{epochs}, Training Loss: {loss.item():.6f}, Validation Loss: {val_loss:.6f}', flush=True)
@@ -222,8 +222,15 @@ print("Loading best checkpoint for inference...", flush=True)
 model.load_state_dict(torch.load('/home/ec2-user/ML_Thesis_with_DL/data/unet_best.pt', map_location=DEVICE))
 model.eval()
 
+# Load test data now (after training, so GPU memory is free)
+print("Loading test tensors...", flush=True)
+test_X_tensor = to_tensor(test_dataset_cnn_X_norm)
+
 with torch.no_grad():
-    predictions_norm = model(test_X_tensor)
+    pred_parts = []
+    for i in range(0, len(test_X_tensor), 128):
+        pred_parts.append(model(test_X_tensor[i:i+128].to(DEVICE)).cpu())
+    predictions_norm = torch.cat(pred_parts, dim=0)
 
 predictions_norm_np = predictions_norm.cpu().numpy().squeeze(1)
 
