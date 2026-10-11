@@ -48,19 +48,20 @@ lats = ds_pred['lat'].values
 lons = ds_pred['lon'].values
 n_lat, n_lon = len(lats), len(lons)
 
-# ── Load observations — resample hourly → 12-hourly binary ──────────────────
+# ── Load observations — resample hourly → 12-hourly raw counts ──────────────
 print("Loading observations...", flush=True)
 ds_obs_h = xr.open_dataset(os.path.join(DATA_DIR, 'jones_israel_all_years.nc'))
-ds_obs_h = ds_obs_h.isel(lat=slice(0, n_lat), lon=slice(0, n_lon))
-obs_12h  = (ds_obs_h['ltg'].resample(time='12h').sum() > 0).astype(float)
+ds_obs_h = ds_obs_h.sel(lat=lats, lon=lons, method='nearest')
+obs_12h  = ds_obs_h['ltg'].resample(time='12h').sum().astype(float)  # raw counts
 obs_da   = obs_12h.sel(time=test_times, method='nearest')
 
 print(f"Test period : {pd.Timestamp(test_times[0]).date()} → {pd.Timestamp(test_times[-1]).date()}")
 print(f"Grid        : {n_lat}×{n_lon}, Timesteps: {len(test_times)}", flush=True)
 
-prob_np = prob_da.values   # (T, lat, lon)  probability
-pred_np = pred_da.values   # (T, lat, lon)  binary prediction
-obs_np  = obs_da.values    # (T, lat, lon)  binary observation (0/1)
+prob_np      = prob_da.values              # (T, lat, lon)  predicted stroke counts
+pred_np      = pred_da.values              # (T, lat, lon)  binary prediction (count >= 1)
+obs_np       = obs_da.values               # (T, lat, lon)  observed stroke counts
+obs_binary_np = (obs_np > 0).astype(float) # (T, lat, lon)  binary obs (0/1)
 
 # ── FSS ──────────────────────────────────────────────────────────────────────
 def compute_fss(obs, pred, threshold, window_size):
@@ -72,7 +73,7 @@ def compute_fss(obs, pred, threshold, window_size):
     den = np.sum(pred_frac**2 + obs_frac**2)
     return np.nan if den == 0 else 1 - num / den
 
-THRESHOLD    = 0.5
+THRESHOLD    = 1.0   # >= 1 stroke = lightning event
 WINDOW_SIZE  = 3
 WINDOW_SIZES = [1, 3, 5]
 
@@ -87,13 +88,13 @@ fss_arr   = fss_by_window[WINDOW_SIZE]
 fss_valid = fss_arr[np.isfinite(fss_arr)]
 
 # ── Classification metrics ────────────────────────────────────────────────────
-obs_flat  = obs_np.ravel().astype(int)
+obs_flat  = obs_binary_np.ravel().astype(int)
 pred_flat = pred_np.ravel().astype(int)
 fin = np.isfinite(obs_flat) & np.isfinite(pred_flat)
 precision = precision_score(obs_flat[fin], pred_flat[fin], zero_division=0)
 recall    = recall_score(obs_flat[fin], pred_flat[fin], zero_division=0)
 f1        = f1_score(obs_flat[fin], pred_flat[fin], zero_division=0)
-obs_freq  = obs_np.mean(axis=0).ravel()
+obs_freq  = obs_binary_np.mean(axis=0).ravel()
 pred_freq = pred_np.mean(axis=0).ravel()
 fin2 = np.isfinite(obs_freq) & np.isfinite(pred_freq)
 r2_clim = r2_score(obs_freq[fin2], pred_freq[fin2])
@@ -192,11 +193,12 @@ OND_MONTHS = [10, 11, 12]
 OND_LABELS = ['October', 'November', 'December']
 months_arr = pd.DatetimeIndex(test_times).month
 
-# Shared normalisation: global max of monthly mean obs freq and monthly mean prob
+# Normalise obs and pred each by their own max (different scales: counts vs counts)
 all_monthly_obs  = np.stack([obs_np[months_arr == m].mean(axis=0)  for m in OND_MONTHS])
 all_monthly_prob = np.stack([prob_np[months_arr == m].mean(axis=0) for m in OND_MONTHS])
-global_max = max(np.nanmax(all_monthly_obs), np.nanmax(all_monthly_prob))
-print(f"  Monthly maps global_max = {global_max:.4f}", flush=True)
+obs_max  = np.nanmax(all_monthly_obs)   if np.nanmax(all_monthly_obs)  > 0 else 1.0
+pred_max = np.nanmax(all_monthly_prob)  if np.nanmax(all_monthly_prob) > 0 else 1.0
+print(f"  Monthly maps: obs_max={obs_max:.4f}, pred_max={pred_max:.4f}", flush=True)
 
 VMIN_DISPLAY = 0.02   # values below this render as white (effectively "no signal")
 nrows = len(OND_MONTHS)
@@ -231,8 +233,8 @@ for row, (m, mlabel) in enumerate(zip(OND_MONTHS, OND_LABELS)):
     raw_obs_sm  = gaussian_filter(raw_obs,  sigma=SMOOTH_SIGMA)
     raw_prob_sm = gaussian_filter(raw_prob, sigma=SMOOTH_SIGMA)
 
-    obs_plot  = np.where(raw_obs_sm  > 0, raw_obs_sm  / global_max, np.nan)
-    prob_plot = np.where(raw_prob_sm > 0, raw_prob_sm / global_max, np.nan)
+    obs_plot  = np.where(raw_obs_sm  > 0, raw_obs_sm  / obs_max,  np.nan)
+    prob_plot = np.where(raw_prob_sm > 0, raw_prob_sm / pred_max, np.nan)
 
     last_im = draw_map(fig, axs[row, 0], obs_plot,  VMIN_DISPLAY, 1, cmap_ltg,
                        proj=proj, add_cb=False)
@@ -240,12 +242,12 @@ for row, (m, mlabel) in enumerate(zip(OND_MONTHS, OND_LABELS)):
 
     draw_map(fig, axs[row, 1], prob_plot, VMIN_DISPLAY, 1, cmap_ltg,
              proj=proj, add_cb=False)
-    axs[row, 1].set_title(f'{mlabel} — U-Net Probability', fontsize=11, pad=3)
+    axs[row, 1].set_title(f'{mlabel} — U-Net Predicted Density', fontsize=11, pad=3)
 
 # Single shared colorbar on the far right
 cbar_ax = fig.add_axes([0.90, 0.05, 0.018, 0.85])
 cb = fig.colorbar(last_im, cax=cbar_ax)
-cb.set_label('Relative lightning freq / probability  (0–1)', fontsize=10)
+cb.set_label('Relative lightning density  (0–1, each panel normalized)', fontsize=10)
 
 fig.suptitle('Monthly Lightning Frequency vs Predicted Probability — Test 2024–2025',
              fontsize=13, y=0.97)
