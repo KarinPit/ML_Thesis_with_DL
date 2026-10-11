@@ -69,6 +69,10 @@ season_mask = ds_12h.time.dt.month.isin([9, 10, 11, 12])
 season_idx  = np.where(season_mask.values)[0]
 ds_12h = ds_12h.isel(time=season_idx)
 
+print("Loading resampled data into RAM (this takes ~1 min)...", flush=True)
+ds_12h = ds_12h.load()
+print("Data loaded into memory.", flush=True)
+
 all_vars  = list(ds_12h.data_vars)
 all_times = pd.DatetimeIndex(ds_12h.time.values)
 lats = ds_12h.lat.values
