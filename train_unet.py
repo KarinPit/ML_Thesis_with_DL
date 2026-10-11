@@ -103,48 +103,50 @@ torch.manual_seed(seed)
 print(f"Splits — train: {len(idx_train)}, val: {len(idx_val)}, test: {len(idx_test)}", flush=True)
 print(f"Test period: {pd.Timestamp(all_times[idx_test[0]]).date()} → {pd.Timestamp(all_times[idx_test[-1]]).date()}", flush=True)
 
-# Define the PyTorch model
+# Define the PyTorch model — U-Net with skip connections
 class SimpleCNN(nn.Module):
     def __init__(self, zdim, ydim, xdim):
         super(SimpleCNN, self).__init__()
-        self.encoder0 = self.encoder_block(zdim, 32)
-        self.encoder1 = self.encoder_block(32, 16)
+        # Encoder (same channel sizes as Jones)
+        self.enc0 = self.conv_block(zdim, 32)
+        self.pool0 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.enc1 = self.conv_block(32, 16)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        # Bottleneck
         self.center = self.conv_block(16, 8)
-        self.decoder1 = self.decoder_block(8, 16)
-        self.decoder0 = self.decoder_block(16, 32)
+
+        # Decoder with skip connections (enc feature channels concatenated)
+        self.up1    = nn.ConvTranspose2d(8, 16, kernel_size=2, stride=2)
+        self.dec1   = self.conv_block(16 + 16, 16)   # 16 from up + 16 skip from enc1
+
+        self.up0    = nn.ConvTranspose2d(16, 32, kernel_size=2, stride=2)
+        self.dec0   = self.conv_block(32 + 32, 32)   # 32 from up + 32 skip from enc0
+
         self.outputs = nn.Sequential(
             nn.Conv2d(32, 1, kernel_size=1, padding=0),
-            # No ReLU — normalized targets can be negative
+            nn.ReLU()   # log1p targets are always >= 0
         )
 
     def conv_block(self, in_channels, out_channels):
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
-        )
-
-    def encoder_block(self, in_channels, out_channels):
-        return nn.Sequential(
-            self.conv_block(in_channels, out_channels),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
-
-    def decoder_block(self, in_channels, out_channels):
-        return nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
-        encoder0 = self.encoder0(x)
-        encoder1 = self.encoder1(encoder0)
-        center = self.center(encoder1)
-        decoder1 = self.decoder1(center)
-        decoder0 = self.decoder0(decoder1)
-        outputs = self.outputs(decoder0)
-        return outputs
+        # Encoder
+        e0 = self.enc0(x)           # (B, 32, H,   W)
+        e1 = self.enc1(self.pool0(e0))  # (B, 16, H/2, W/2)
+        c  = self.center(self.pool1(e1))  # (B,  8, H/4, W/4)
+
+        # Decoder + skip connections
+        d1 = self.dec1(torch.cat([self.up1(c), e1], dim=1))   # (B, 16, H/2, W/2)
+        d0 = self.dec0(torch.cat([self.up0(d1), e0], dim=1))  # (B, 32, H,   W)
+
+        return self.outputs(d0)
 
 # Initialize model, loss function, and optimizer
 # zdim = number of input features; ydim/xdim = spatial grid (unused inside the model,
@@ -242,13 +244,8 @@ def norm_to_tensor(by_year_dict, label):
 
         # Stack features: (T, lat, lon, n_X_vars)
         X_arr = np.stack([sub_X[v].values for v in feature_name], axis=-1).astype(np.float32)
-        # Z-score normalise ltg per month (Jones approach) — shape (T, lat, lon, 1)
-        ltg_raw = sub_y['ltg'].values.astype(np.float64)
-        y_arr = np.zeros_like(ltg_raw, dtype=np.float32)
-        for t in range(T):
-            m = months_arr[t] - 1
-            y_arr[t] = ((ltg_raw[t] - y_mean[m]) / y_std[m]).astype(np.float32)
-        y_arr = np.nan_to_num(y_arr, nan=0.0)[:, :, :, np.newaxis]
+        # log1p-transform ltg counts — compresses heavy tail, handles skew
+        y_arr = np.log1p(sub_y['ltg'].values).astype(np.float32)[:, :, :, np.newaxis]
         del sub_X, sub_y
 
         # Normalise features per month; y is already binary — no normalisation needed
@@ -332,14 +329,9 @@ with torch.no_grad():
         logit_parts.append(model(test_X_tensor[i:i+128].to(DEVICE)).cpu())
     logits = torch.cat(logit_parts, dim=0)   # raw logits, shape (T, 1, lat, lon)
 
-# Unnormalise predictions back to stroke count space (Jones approach)
-pred_norm_np  = logits.numpy().squeeze(1)               # (T, lat, lon), z-score scale
-test_months   = pd.DatetimeIndex(test_times_sorted).month.values
-pred_count_np = np.zeros_like(pred_norm_np, dtype=np.float32)
-for t in range(len(test_times_sorted)):
-    m = test_months[t] - 1
-    pred_count_np[t] = (pred_norm_np[t] * y_std[m] + y_mean[m]).astype(np.float32)
-pred_count_np  = pred_count_np.clip(0)                  # clip negatives to 0 (Jones)
+# Invert log1p → stroke counts; ReLU in model already ensures output >= 0
+log_pred_np   = logits.numpy().squeeze(1)               # (T, lat, lon), log1p scale
+pred_count_np = np.expm1(log_pred_np).clip(0)           # (T, lat, lon), stroke counts >= 0
 pred_binary_np = (pred_count_np >= 1).astype(np.float32)  # binary: >= 1 stroke = positive
 
 T_test = len(test_times_sorted)
