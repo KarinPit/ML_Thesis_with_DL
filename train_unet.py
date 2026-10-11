@@ -152,7 +152,7 @@ xdim_m = n_lon
 print(f"Model dims: zdim={zdim_m}, ydim={ydim_m}, xdim={xdim_m}", flush=True)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 model = SimpleCNN(zdim_m, ydim_m, xdim_m).to(DEVICE)
-criterion = nn.BCEWithLogitsLoss()
+criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val]).to(DEVICE))
 optimizer = optim.Adam(model.parameters(), lr=0.005)
 
 # ── Helper: group global time indices by year ──────────────────────────────────
@@ -178,6 +178,8 @@ X_count  = np.zeros((n_months, n_X_vars), dtype=np.float64)
 y_sum    = np.zeros(n_months, dtype=np.float64)
 y_sum_sq = np.zeros(n_months, dtype=np.float64)
 y_count  = np.zeros(n_months, dtype=np.float64)
+y_pos    = 0.0   # pixels with lightning (ltg > 0)
+y_neg    = 0.0   # pixels without lightning
 
 print("Computing train stats (year-by-year)...", flush=True)
 for yr, yr_indices in train_by_year.items():
@@ -203,6 +205,11 @@ for yr, yr_indices in train_by_year.items():
         y_sum_sq[m_idx-1] += (yv_fin**2).sum()
         y_count[m_idx-1]  += len(yv_fin)
 
+    # Count positive/negative pixels for pos_weight
+    ltg_all = sub_y['ltg'].values
+    y_pos += float((ltg_all > 0).sum())
+    y_neg += float((ltg_all == 0).sum())
+
     del sub_X, sub_y; gc.collect()
 
 X_mean = X_sum    / X_count
@@ -212,6 +219,10 @@ y_std  = np.sqrt(np.maximum(y_sum_sq / y_count - y_mean**2, 1e-12))
 print("Train stats done.", flush=True)
 for m in [10, 11, 12]:
     print(f"  ltg month {m}: mean={y_mean[m-1]:.4f}  std={y_std[m-1]:.4f}", flush=True)
+
+# pos_weight = neg / pos (how many times rarer lightning is)
+pos_weight_val = float(y_neg / max(y_pos, 1))
+print(f"  pos_weight (neg/pos ratio) = {pos_weight_val:.2f}", flush=True)
 
 # ── Load, normalise, and convert a split to tensors (Jones z-score on both X and y) ──
 def norm_to_tensor(by_year_dict, label):
