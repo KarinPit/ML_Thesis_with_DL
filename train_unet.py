@@ -74,6 +74,9 @@ print(f"After resampling: {ds_daily.sizes['time']} 12-hourly timesteps", flush=T
 
 dataset_cnn = ds_daily
 
+# ── Print available variables so you can verify feature list ──────────────────
+print(f"\nVariables in dataset: {list(ds_daily.data_vars)}", flush=True)
+
 # ── Temporal split: 2024-2025 = test, 2013-2023 = train+val ────────────────────
 all_times  = ds_daily.time.values
 test_mask  = all_times >= np.datetime64('2024-01-01')
@@ -256,6 +259,7 @@ def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, 
 
     best_val_loss = float('inf')
     patience_counter = 0
+    ckpt_path = '/home/ec2-user/ML_Thesis_with_DL/data/unet_best.pt'
 
     for epoch in range(epochs):
         # ── Training phase ──────────────────────────────────────────────────────
@@ -285,10 +289,12 @@ def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, 
         val_loss /= max(1, n_val_batches)
         print(f'Epoch {epoch+1}/{epochs}, Training Loss: {loss.item():.6f}, Validation Loss: {val_loss:.6f}', flush=True)
 
-        # ── Early stopping ──────────────────────────────────────────────────────
+        # ── Early stopping + checkpoint ─────────────────────────────────────────
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"  ✓ best model saved (val={val_loss:.6f})", flush=True)
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -297,7 +303,8 @@ def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, 
 
 train(model, criterion, optimizer, tr_X_tensor, tr_y_tensor, val_X_tensor, val_y_tensor)
 
-print("Training done. Running inference on test set...", flush=True)
+print("Training done. Loading best checkpoint for inference...", flush=True)
+model.load_state_dict(torch.load('/home/ec2-user/ML_Thesis_with_DL/data/unet_best.pt', map_location=DEVICE))
 model.eval()
 
 with torch.no_grad():
