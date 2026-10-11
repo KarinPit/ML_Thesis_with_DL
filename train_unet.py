@@ -137,15 +137,12 @@ class SimpleCNN(nn.Module):
         return outputs
 
 model     = SimpleCNN(zdim, ydim, xdim).to(DEVICE)
-criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.005)
 
-# ── Normalisation (Jones: per-month z-score, stats from train only) ────────────
+# ── Normalisation (Jones: per-month z-score on features only) ─────────────────
 print("Computing normalisation stats...", flush=True)
 train_X_mean = train_dataset_cnn_X.groupby('time.month').mean(dim=['time', 'lat', 'lon'])
 train_X_std  = train_dataset_cnn_X.groupby('time.month').std(dim=['time', 'lat', 'lon'])
-train_y_mean = train_dataset_cnn_y.groupby('time.month').mean(dim=['time', 'lat', 'lon'])
-train_y_std  = train_dataset_cnn_y.groupby('time.month').std(dim=['time', 'lat', 'lon'])
 
 def zscore(ds, mean, std):
     return ((ds.groupby('time.month') - mean).groupby('time.month') / std).fillna(0)
@@ -154,22 +151,33 @@ print("Normalising splits...", flush=True)
 train_dataset_cnn_X_norm = zscore(train_dataset_cnn_X, train_X_mean, train_X_std)
 val_dataset_cnn_X_norm   = zscore(val_dataset_cnn_X,   train_X_mean, train_X_std)
 test_dataset_cnn_X_norm  = zscore(test_dataset_cnn_X,  train_X_mean, train_X_std)
-train_dataset_cnn_y_norm = zscore(train_dataset_cnn_y, train_y_mean, train_y_std)
-val_dataset_cnn_y_norm   = zscore(val_dataset_cnn_y,   train_y_mean, train_y_std)
-test_dataset_cnn_y_norm  = zscore(test_dataset_cnn_y,  train_y_mean, train_y_std)
+
+# ── BCE loss with pos_weight (sqrt of neg/pos ratio balances precision/recall) ─
+y_train_flat  = (train_dataset_cnn_y['ltg'].values > 0).ravel()
+n_pos         = float(y_train_flat.sum())
+n_neg         = float((~y_train_flat.astype(bool)).sum())
+pos_weight_val = float(np.sqrt(n_neg / n_pos))
+print(f"pos_weight (sqrt): {pos_weight_val:.2f}  (neg/pos ratio: {n_neg/n_pos:.1f})", flush=True)
+criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val], device=DEVICE))
 
 # ── Convert to tensors ─────────────────────────────────────────────────────────
 print("Converting to tensors...", flush=True)
 def to_tensor(ds_norm):
     """Convert normalised xarray dataset to CPU tensor — batches moved to GPU inside training loop."""
     arr = np.moveaxis(np.array(ds_norm.to_array()), 0, -1)
+    arr = np.nan_to_num(arr, nan=0.0)   # replace any residual NaNs with 0
     return torch.tensor(arr, dtype=torch.float32).permute(0, 3, 1, 2)  # stays on CPU
+
+def to_binary_tensor(ds_y):
+    """Binarise lightning target: >0 → 1, else 0. Shape (T, 1, H, W)."""
+    arr = (ds_y['ltg'].values > 0).astype('float32')
+    return torch.tensor(arr[:, np.newaxis, :, :])  # stays on CPU
 
 # Load train + val into RAM; test loaded after training to save GPU memory
 tr_X_tensor  = to_tensor(train_dataset_cnn_X_norm)
 val_X_tensor = to_tensor(val_dataset_cnn_X_norm)
-tr_y_tensor  = to_tensor(train_dataset_cnn_y_norm)
-val_y_tensor = to_tensor(val_dataset_cnn_y_norm)
+tr_y_tensor  = to_binary_tensor(train_dataset_cnn_y)
+val_y_tensor = to_binary_tensor(val_dataset_cnn_y)
 
 # ── Training ───────────────────────────────────────────────────────────────────
 def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, val_targets,
@@ -229,37 +237,24 @@ test_X_tensor = to_tensor(test_dataset_cnn_X_norm)
 with torch.no_grad():
     pred_parts = []
     for i in range(0, len(test_X_tensor), 128):
-        pred_parts.append(model(test_X_tensor[i:i+128].to(DEVICE)).cpu())
-    predictions_norm = torch.cat(pred_parts, dim=0)
+        logits = model(test_X_tensor[i:i+128].to(DEVICE))
+        pred_parts.append(torch.sigmoid(logits).cpu())
+    prob_tensor = torch.cat(pred_parts, dim=0)
 
-predictions_norm_np = predictions_norm.cpu().numpy().squeeze(1)
+prob_np        = prob_tensor.numpy().squeeze(1)          # (T, H, W)  probabilities 0–1
+pred_binary_np = (prob_np >= 0.5).astype('float32')
 
-# ── Jones unnormalization ──────────────────────────────────────────────────────
+# ── Save predictions ───────────────────────────────────────────────────────────
+out_path = '/home/ec2-user/ML_Thesis_with_DL/data/unet_binary_OND_predictions.nc'
 dims   = ['time', 'lat', 'lon']
 coords = {
     'time': test_dataset_cnn_y['time'].values,
     'lat':  test_dataset_cnn_y['lat'].values,
     'lon':  test_dataset_cnn_y['lon'].values,
 }
-predictions_norm_da = xr.DataArray(predictions_norm_np, dims=dims, coords=coords)
-
-predictions_unnorm_da = (
-    ((predictions_norm_da - predictions_norm_da.mean(dim={'time', 'lat', 'lon'}))
-     / predictions_norm_da.std(dim={'time', 'lat', 'lon'})
-     ).groupby('time.month')
-    * train_dataset_cnn_y['ltg'].groupby('time.month').std(dim={'time', 'lat', 'lon'})
-).groupby('time.month') + train_dataset_cnn_y['ltg'].groupby('time.month').mean(dim={'time', 'lat', 'lon'})
-
-predictions_unnorm_da = predictions_unnorm_da.where(predictions_unnorm_da >= 0, other=0)
-predictions_unnorm_ds = predictions_unnorm_da.to_dataset(name='ltg')
-
-# ── Save predictions ───────────────────────────────────────────────────────────
-out_path = '/home/ec2-user/ML_Thesis_with_DL/data/unet_binary_OND_predictions.nc'
-pred_count_np  = predictions_unnorm_da.values
-pred_binary_np = (pred_count_np >= 1).astype('float32')
 
 ds_out = xr.Dataset({
-    'prob': xr.DataArray(pred_count_np,  dims=dims, coords=coords),
+    'prob': xr.DataArray(prob_np,        dims=dims, coords=coords),
     'pred': xr.DataArray(pred_binary_np, dims=dims, coords=coords),
 })
 ds_out.to_netcdf(out_path)
