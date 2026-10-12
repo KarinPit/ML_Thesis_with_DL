@@ -1,317 +1,341 @@
-import xarray as xr
-import numpy as np
-import os
-import matplotlib.pyplot as plt
-import matplotlib.colors as colors
-import scipy.stats as stats
-import netCDF4
-from sklearn.metrics import r2_score
-from sklearn.model_selection import train_test_split
+"""
+unet_12h.py — 12-hourly lightning U-Net with an intensity-preserving loss.
 
-import sys
-import random
-import os
+Replaces unet_12h_log.py. Two loss options (same data, model and split, so they compare cleanly):
+
+  LOSS = 'poisson'  (recommended)  model predicts log(expected strokes); Poisson loss on raw counts.
+                    The prediction is the MEAN number of strokes, so monthly means match observations.
+  LOSS = 'log_mse'                 the previous run: MSE on z-scored log1p(strokes). Predicts a
+                    "typical" value, which is far below the mean for rare, bursty lightning → intensity
+                    is underestimated (you saw ~6.5× too low).
+
+CALIBRATE = True  additionally applies quantile mapping fitted on the VALIDATION year, so the
+                  distribution of predicted intensities matches the observed one (test is never used).
+"""
 import xarray as xr
 import numpy as np
-import numpy.ma as ma
-import pandas as pd
+import os
+import random
 import math
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.colors as colors
-import matplotlib.patches as patches
-import matplotlib.ticker as ticker
-from matplotlib.path import Path
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from eofs.xarray import Eof
-import time
-import h5py
-from scipy.signal import correlation_lags
+import pandas as pd
+from scipy.ndimage import uniform_filter
 from scipy.stats import pearsonr
-from scipy.stats import linregress
-from datetime import datetime
+from sklearn.metrics import r2_score
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-from torchvision import datasets, transforms
-import gc
 
-os.chdir('/home/ec2-user/ML_Thesis_with_DL/data/')
+# ── Config ─────────────────────────────────────────────────────────────────────
+LOSS      = 'poisson'          # 'poisson' or 'log_mse'
+CALIBRATE = True               # quantile-map predictions to the observed distribution (fit on val year)
+RETRAIN   = True               # False = reuse the saved checkpoint (e.g. after fixing test-year data only)
 
-# ── Device ─────────────────────────────────────────────────────────────────────
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f"Using device: {DEVICE}", flush=True)
+DATA_DIR   = '/home/ec2-user/ML_Thesis_with_DL/data'
+DATA_PATH  = f'{DATA_DIR}/jones_israel_all_years.nc'            # hourly source file
+PREP_PATH  = f'{DATA_DIR}/jones_israel_12h_OND.nc'              # cached 12-hourly file (built once)
+CKPT_PATH  = f'{DATA_DIR}/unet_12h_{LOSS}_best.pt'
+OUT_PATH   = f'{DATA_DIR}/unet_12h_{LOSS}_OND_predictions.nc'
 
-# ── Geographic crop (set to None to use full domain) ──────────────────────────
-# Full domain: lat 28–43.25°N, lon 0–39.25°E
-# Tip: raise LON_MIN to ~10 to cut out the Sahara; raise LAT_MIN to ~30 to drop deep Negev/desert
-LAT_MIN = 30.0   # °N  — southern boundary
-LAT_MAX = 43.0   # °N  — northern boundary
-LON_MIN = 10.0   # °E  — western boundary (0 = full domain incl. Sahara)
-LON_MAX = 39.0   # °E  — eastern boundary
+LAT_MIN, LAT_MAX = 30.0, 43.0
+LON_MIN, LON_MAX = 10.0, 39.0
 
-# ── Load dataset ───────────────────────────────────────────────────────────────
-ds_daily = xr.open_dataset('jones_israel_all_years.nc')
+ACTIVE_MONTHS = [10, 11, 12]
+AGG_HOURS     = 12
 
-# Apply geographic crop before divisibility trim (works for both asc and desc lat/lon)
-lat_mask = (ds_daily.lat >= LAT_MIN) & (ds_daily.lat <= LAT_MAX)
-lon_mask = (ds_daily.lon >= LON_MIN) & (ds_daily.lon <= LON_MAX)
-ds_daily = ds_daily.isel(lat=lat_mask.values, lon=lon_mask.values)
-print(f"Geographic crop: lat {float(ds_daily.lat.min()):.2f}–{float(ds_daily.lat.max()):.2f}°N, "
-      f"lon {float(ds_daily.lon.min()):.2f}–{float(ds_daily.lon.max()):.2f}°E", flush=True)
+# Years left out completely (not used for training, validation or testing):
+#   2025 — precipitation is all zeros in the source file (data gap)
+#   2023 — unusual year (few storms, mostly over land)
+EXCLUDE_YEARS = [2023, 2025]
+VAL_YEARS     = [2021]
+TEST_YEARS    = [2022, 2024]
+# everything else (2013–2020) is training
 
-# Trim to dimensions divisible by 4 (required for encoder/decoder pooling)
-n_lat = (ds_daily.sizes['lat'] // 4) * 4
-n_lon = (ds_daily.sizes['lon'] // 4) * 4
-ds_daily = ds_daily.isel(lat=slice(0, n_lat), lon=slice(0, n_lon))
-print(f"Grid trimmed to: {n_lat} × {n_lon}", flush=True)
-
-dataset_cnn = ds_daily
-
-feature_name = ['cape', 'precipitation', 'rh', 'shear', 't2m', 'wcd', 'vertical_velocity_500hPa']
+feature_name = ['cape', 'precipitation', 'lsm', 'rh', 't2m', 'wcd',
+                'total_totals_index', 'total_column_cloud_ice_water']
 output_name  = ['ltg']
 
-# ── Temporal split: 2024-2025 = test, rest = train+val ────────────────────────
-all_times = ds_daily.time.values
-test_mask = all_times >= np.datetime64('2024-01-01')
-idx_test  = np.where(test_mask)[0]
-idx_tv    = np.where(~test_mask)[0]
+LOG_FEATURES = ['cape', 'precipitation', 'total_column_cloud_ice_water']
+LOG_TARGET   = (LOSS == 'log_mse')     # Poisson works on raw counts
+WCD_MIN      = -2000.0
 
-# ── Season filter: Oct-Nov-Dec only ───────────────────────────────────────────
-ACTIVE_MONTHS = [10, 11, 12]
-all_months = pd.DatetimeIndex(all_times).month
-idx_test = idx_test[np.isin(all_months[idx_test], ACTIVE_MONTHS)]
-idx_tv   = idx_tv[np.isin(all_months[idx_tv],   ACTIVE_MONTHS)]
-print(f"Season filter {ACTIVE_MONTHS}: {len(idx_tv)} train+val, {len(idx_test)} test timesteps", flush=True)
+SEED       = 13
+BATCH_SIZE = 16
+EPOCHS     = 100
+PATIENCE   = 10
+LR         = 1e-3
+GRAD_CLIP  = 1.0                       # protects against the occasional huge storm count
 
-idx_train, idx_val = train_test_split(idx_tv, test_size=0.25, random_state=13)
+FSS_THRESHOLD = 1.0
+FSS_WINDOW    = 3
 
-# ── Derive dims dynamically ────────────────────────────────────────────────────
-zdim = len(feature_name)
-ydim = n_lat
-xdim = n_lon
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"Using device: {DEVICE} | LOSS={LOSS} | CALIBRATE={CALIBRATE}", flush=True)
+random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
 
-seed = 13
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
 
-print(f"Splits — train: {len(idx_train)}, val: {len(idx_val)}, test: {len(idx_test)}", flush=True)
-print(f"Model dims: zdim={zdim}, ydim={ydim}, xdim={xdim}", flush=True)
+# ── 1. 12-hourly dataset (built once, cached) ──────────────────────────────────
+def build_aggregated():
+    print(f"Building {AGG_HOURS}-hourly dataset from hourly file (one-time)...", flush=True)
+    ds = xr.open_dataset(DATA_PATH)
+    lat_mask = (ds.lat >= LAT_MIN) & (ds.lat <= LAT_MAX)
+    lon_mask = (ds.lon >= LON_MIN) & (ds.lon <= LON_MAX)
+    ds = ds.isel(lat=lat_mask.values, lon=lon_mask.values)[feature_name + output_name]
 
-# ── Dataset slices ─────────────────────────────────────────────────────────────
-train_dataset_cnn_X = dataset_cnn[feature_name].isel(time=idx_train)
-val_dataset_cnn_X   = dataset_cnn[feature_name].isel(time=idx_val)
-test_dataset_cnn_X  = dataset_cnn[feature_name].isel(time=idx_test)
-train_dataset_cnn_y = dataset_cnn[output_name].isel(time=idx_train)
-val_dataset_cnn_y   = dataset_cnn[output_name].isel(time=idx_val)
-test_dataset_cnn_y  = dataset_cnn[output_name].isel(time=idx_test)
+    parts = []
+    for yr in np.unique(ds.time.dt.year.values):
+        d = ds.sel(time=str(yr))
+        d = d.sel(time=d.time.dt.month.isin(ACTIVE_MONTHS)).load()
+        if d.sizes['time'] == 0:
+            continue
+        if 'wcd' in d:
+            d['wcd'] = d['wcd'].fillna(0).clip(min=WCD_MIN)
+        rs   = f'{AGG_HOURS}h'
+        X    = d[feature_name].resample(time=rs).mean()
+        y    = d[output_name].resample(time=rs).sum(min_count=1)
+        nhrs = d['time'].resample(time=rs).count()
+        agg  = xr.merge([X, y]).sel(time=nhrs.time[nhrs == AGG_HOURS])
+        parts.append(agg.astype('float32'))
+        print(f"  {yr}: {d.sizes['time']} hourly → {agg.sizes['time']} × {AGG_HOURS}h", flush=True)
+    out = xr.concat(parts, dim='time')
+    out.to_netcdf(PREP_PATH)
+    return out
 
-# ── Model ──────────────────────────────────────────────────────────────────────
+if os.path.exists(PREP_PATH):
+    print(f"Loading cached {AGG_HOURS}-hourly dataset: {PREP_PATH}", flush=True)
+    ds = xr.open_dataset(PREP_PATH).load()
+else:
+    ds = build_aggregated()
+
+n_lat = (ds.sizes['lat'] // 4) * 4
+n_lon = (ds.sizes['lon'] // 4) * 4
+ds = ds.isel(lat=slice(0, n_lat), lon=slice(0, n_lon))
+print(f"Grid {n_lat}×{n_lon}, {ds.sizes['time']} time steps", flush=True)
+
+# ── 2. Year-based split ────────────────────────────────────────────────────────
+assert not set(EXCLUDE_YEARS) & set(VAL_YEARS + TEST_YEARS), "excluded year also in val/test"
+years     = ds.time.dt.year.values
+keep      = ~np.isin(years, EXCLUDE_YEARS)
+idx_val   = np.where(keep & np.isin(years, VAL_YEARS))[0]
+idx_test  = np.where(keep & np.isin(years, TEST_YEARS))[0]
+idx_train = np.where(keep & ~np.isin(years, VAL_YEARS + TEST_YEARS))[0]
+print(f"Excluded years: {EXCLUDE_YEARS}", flush=True)
+print(f"Splits — train: {len(idx_train)} {sorted(set(years[idx_train].tolist()))}, "
+      f"val: {len(idx_val)} {VAL_YEARS}, test: {len(idx_test)} {TEST_YEARS}", flush=True)
+
+obs_counts_val  = ds['ltg'].isel(time=idx_val)
+obs_counts_test = ds['ltg'].isel(time=idx_test)
+
+# ── 3. Transforms + normalisation ──────────────────────────────────────────────
+ds_model = ds.copy()
+for v in LOG_FEATURES:
+    ds_model[v] = np.log1p(ds_model[v].clip(min=0))
+if LOG_TARGET:
+    ds_model['ltg'] = np.log1p(ds_model['ltg'].clip(min=0))
+else:
+    ds_model['ltg'] = ds_model['ltg'].clip(min=0).fillna(0)
+
+X_tr, X_va, X_te = (ds_model[feature_name].isel(time=i) for i in (idx_train, idx_val, idx_test))
+y_tr, y_va       = (ds_model[output_name].isel(time=i)  for i in (idx_train, idx_val))
+
+train_X_mean = X_tr.groupby('time.month').mean(dim=['time', 'lat', 'lon'])
+train_X_std  = X_tr.groupby('time.month').std(dim=['time', 'lat', 'lon'])
+train_y_mean = y_tr.groupby('time.month').mean(dim=['time', 'lat', 'lon'])
+train_y_std  = y_tr.groupby('time.month').std(dim=['time', 'lat', 'lon'])
+
+def zscore_X(d):
+    return ((d.groupby('time.month') - train_X_mean).groupby('time.month') / train_X_std).fillna(0)
+
+def zscore_y(d):
+    return ((d.groupby('time.month') - train_y_mean).groupby('time.month') / train_y_std).fillna(0)
+
+def to_tensor(d):
+    arr = np.moveaxis(np.array(d.to_array()), 0, -1)
+    arr = np.nan_to_num(arr, nan=0.0)
+    return torch.tensor(arr, dtype=torch.float32).permute(0, 3, 1, 2)
+
+tr_X_tensor, val_X_tensor, test_X_tensor = (to_tensor(zscore_X(d)) for d in (X_tr, X_va, X_te))
+if LOSS == 'poisson':
+    tr_y_tensor, val_y_tensor = to_tensor(y_tr), to_tensor(y_va)          # raw counts
+else:
+    tr_y_tensor, val_y_tensor = to_tensor(zscore_y(y_tr)), to_tensor(zscore_y(y_va))
+
+# ── 4. Model (unchanged) ───────────────────────────────────────────────────────
 class SimpleCNN(nn.Module):
     def __init__(self, zdim, ydim, xdim):
         super(SimpleCNN, self).__init__()
         self.encoder0 = self.encoder_block(zdim, 32)
         self.encoder1 = self.encoder_block(32, 16)
-        self.center = self.conv_block(16, 8)
+        self.center   = self.conv_block(16, 8)
         self.decoder1 = self.decoder_block(8, 16)
         self.decoder0 = self.decoder_block(16, 32)
-        self.outputs = nn.Sequential(
-            nn.Conv2d(32, 1, kernel_size=1, padding=0),
-#            nn.ReLU()  # Ensures non-negative output
-        )
+        self.outputs  = nn.Sequential(nn.Conv2d(32, 1, kernel_size=1, padding=0))
 
-    def conv_block(self, in_channels, out_channels):
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
-        )
+    def conv_block(self, in_ch, out_ch):
+        return nn.Sequential(nn.Conv2d(in_ch, out_ch, 3, padding=1), nn.ReLU(inplace=True))
 
-    def encoder_block(self, in_channels, out_channels):
-        return nn.Sequential(
-            self.conv_block(in_channels, out_channels),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
+    def encoder_block(self, in_ch, out_ch):
+        return nn.Sequential(self.conv_block(in_ch, out_ch), nn.MaxPool2d(2, 2))
 
-    def decoder_block(self, in_channels, out_channels):
+    def decoder_block(self, in_ch, out_ch):
         return nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.ConvTranspose2d(in_ch, out_ch, 2, stride=2), nn.ReLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),        nn.ReLU(inplace=True),
         )
 
     def forward(self, x):
-        encoder0 = self.encoder0(x)
-        encoder1 = self.encoder1(encoder0)
-        center = self.center(encoder1)
-        decoder1 = self.decoder1(center)
-        decoder0 = self.decoder0(decoder1)
-        outputs = self.outputs(decoder0)
-        return outputs
+        e0 = self.encoder0(x)
+        e1 = self.encoder1(e0)
+        c  = self.center(e1)
+        d1 = self.decoder1(c)
+        d0 = self.decoder0(d1)
+        return self.outputs(d0)     # poisson: log(expected strokes) | log_mse: z-scored log1p
 
-model = SimpleCNN(zdim, ydim, xdim).to(DEVICE)
-optimizer = optim.Adam(model.parameters(), lr=0.005)
+model = SimpleCNN(len(feature_name), n_lat, n_lon).to(DEVICE)
 
-# ── Normalisation (Jones: per-month z-score on features only) ─────────────────
-print("Computing normalisation stats...", flush=True)
-train_X_mean = train_dataset_cnn_X.groupby('time.month').mean(dim=['time', 'lat', 'lon'])
-train_X_std  = train_dataset_cnn_X.groupby('time.month').std(dim=['time', 'lat', 'lon'])
+if LOSS == 'poisson':
+    # Start from the domain-mean rate so early training isn't spent learning the overall level
+    with torch.no_grad():
+        model.outputs[0].bias.fill_(math.log(max(float(tr_y_tensor.mean()), 1e-3)))
+    # full=True adds the log(y!) term: constant w.r.t. the model (same gradients, same training),
+    # but makes the loss a true negative log-likelihood (≥ 0) instead of an arbitrary-offset negative number
+    _poisson = nn.PoissonNLLLoss(log_input=True, full=True)
+    criterion = lambda out, y: _poisson(out.clamp(-20, 12), y)
+else:
+    criterion = nn.MSELoss()
 
-def zscore(ds, mean, std):
-    return ((ds.groupby('time.month') - mean).groupby('time.month') / std).fillna(0)
+optimizer = optim.Adam(model.parameters(), lr=LR)
 
-print("Normalising splits...", flush=True)
-train_dataset_cnn_X_norm = zscore(train_dataset_cnn_X, train_X_mean, train_X_std)
-val_dataset_cnn_X_norm   = zscore(val_dataset_cnn_X,   train_X_mean, train_X_std)
-test_dataset_cnn_X_norm  = zscore(test_dataset_cnn_X,  train_X_mean, train_X_std)
-
-# ── BCE loss with pos_weight (sqrt of neg/pos ratio balances precision/recall) ─
-y_train_flat  = (train_dataset_cnn_y['ltg'].values > 0).ravel()
-n_pos = float(y_train_flat.sum())
-n_neg = float((~y_train_flat.astype(bool)).sum())
-pos_weight_val = float(np.sqrt(n_neg / n_pos))
-print(f"pos_weight (sqrt): {pos_weight_val:.2f}  (neg/pos ratio: {n_neg/n_pos:.1f})", flush=True)
-# criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val], device=DEVICE))
-criterion = nn.BCEWithLogitsLoss()
-
-# ── Convert to tensors ─────────────────────────────────────────────────────────
-print("Converting to tensors...", flush=True)
-def to_tensor(ds_norm):
-    """Convert normalised xarray dataset to CPU tensor — batches moved to GPU inside training loop."""
-    arr = np.moveaxis(np.array(ds_norm.to_array()), 0, -1)
-    arr = np.nan_to_num(arr, nan=0.0)   # replace any residual NaNs with 0
-    return torch.tensor(arr, dtype=torch.float32).permute(0, 3, 1, 2)  # stays on CPU
-
-def to_binary_tensor(ds_y):
-    """Binarise lightning target: >0 → 1, else 0. Shape (T, 1, H, W)."""
-    arr = (ds_y['ltg'].values > 0).astype('float32')
-    return torch.tensor(arr[:, np.newaxis, :, :])  # stays on CPU
-
-# Load train + val into RAM; test loaded after training to save GPU memory
-tr_X_tensor  = to_tensor(train_dataset_cnn_X_norm)
-val_X_tensor = to_tensor(val_dataset_cnn_X_norm)
-tr_y_tensor  = to_binary_tensor(train_dataset_cnn_y)
-val_y_tensor = to_binary_tensor(val_dataset_cnn_y)
-
-# ── Training ───────────────────────────────────────────────────────────────────
-def train(model, criterion, optimizer, train_inputs, train_targets, val_inputs, val_targets,
-          batch_size=128, epochs=50, patience=5):
-    dataset_size = len(train_inputs)
-    val_size     = len(val_inputs)
-    best_val_loss    = float('inf')
-    patience_counter = 0
-    ckpt_path = '/home/ec2-user/ML_Thesis_with_DL/data/unet_best.pt'
-
-    for epoch in range(epochs):
+# ── 5. Training ────────────────────────────────────────────────────────────────
+def train(model, train_inputs, train_targets, val_inputs, val_targets):
+    best_val_loss, patience_counter = float('inf'), 0
+    for epoch in range(EPOCHS):
         model.train()
-        permutation = torch.randperm(dataset_size)
-        for i in range(0, dataset_size, batch_size):
-            indices = permutation[i:i + batch_size]
-            batch_inputs  = train_inputs[indices].to(DEVICE)
-            batch_targets = train_targets[indices].to(DEVICE)
+        perm = torch.randperm(len(train_inputs))
+        tr_loss, n = 0.0, 0
+        for i in range(0, len(train_inputs), BATCH_SIZE):
+            idx = perm[i:i + BATCH_SIZE]
             optimizer.zero_grad()
-            loss = criterion(model(batch_inputs), batch_targets)
+            loss = criterion(model(train_inputs[idx].to(DEVICE)), train_targets[idx].to(DEVICE))
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
             optimizer.step()
+            tr_loss += loss.item() * len(idx); n += len(idx)
+        tr_loss /= n
 
-        # Validation
         model.eval()
-        val_loss      = 0.0
-        n_val_batches = math.ceil(val_size / batch_size)
+        va_loss, n = 0.0, 0
         with torch.no_grad():
-            for i in range(0, val_size, batch_size):
-                val_out  = model(val_inputs[i:i + batch_size].to(DEVICE))
-                val_loss += criterion(val_out, val_targets[i:i + batch_size].to(DEVICE)).item()
-        val_loss /= max(1, n_val_batches)
+            for i in range(0, len(val_inputs), BATCH_SIZE):
+                xb, yb = val_inputs[i:i + BATCH_SIZE].to(DEVICE), val_targets[i:i + BATCH_SIZE].to(DEVICE)
+                va_loss += criterion(model(xb), yb).item() * len(xb); n += len(xb)
+        va_loss /= n
+        print(f'Epoch {epoch+1}/{EPOCHS}, Train loss: {tr_loss:.4f}, Val loss: {va_loss:.4f}', flush=True)
 
-        print(f'Epoch {epoch+1}/{epochs}, Training Loss: {loss.item():.6f}, Validation Loss: {val_loss:.6f}', flush=True)
-
-        if val_loss < best_val_loss:
-            best_val_loss    = val_loss
-            patience_counter = 0
-            torch.save(model.state_dict(), ckpt_path)
-            # print(f"  ✓ best model saved (val={val_loss:.6f})", flush=True)
+        if va_loss < best_val_loss:
+            best_val_loss, patience_counter = va_loss, 0
+            torch.save(model.state_dict(), CKPT_PATH)
         else:
             patience_counter += 1
-            if patience_counter >= patience:
+            if patience_counter >= PATIENCE:
                 print(f"Early stopping at epoch {epoch+1}", flush=True)
                 break
 
-train(model, criterion, optimizer, tr_X_tensor, tr_y_tensor, val_X_tensor, val_y_tensor)
+if RETRAIN or not os.path.exists(CKPT_PATH):
+    train(model, tr_X_tensor, tr_y_tensor, val_X_tensor, val_y_tensor)
+else:
+    print(f"RETRAIN=False → skipping training, using existing checkpoint {CKPT_PATH}", flush=True)
 
-# ── Inference ──────────────────────────────────────────────────────────────────
-print("Loading best checkpoint for inference...", flush=True)
-model.load_state_dict(torch.load('/home/ec2-user/ML_Thesis_with_DL/data/unet_best.pt', map_location=DEVICE))
+# ── 6. Predictions in stroke counts ────────────────────────────────────────────
+print("Loading best checkpoint...", flush=True)
+model.load_state_dict(torch.load(CKPT_PATH, map_location=DEVICE))
 model.eval()
 
-# Load test data now (after training, so GPU memory is free)
-print("Loading test tensors...", flush=True)
-test_X_tensor = to_tensor(test_dataset_cnn_X_norm)
+def predict_raw(X_tensor):
+    with torch.no_grad():
+        parts = [model(X_tensor[i:i + BATCH_SIZE].to(DEVICE)).cpu()
+                 for i in range(0, len(X_tensor), BATCH_SIZE)]
+    return torch.cat(parts, dim=0).numpy().squeeze(1)
 
-with torch.no_grad():
-    pred_parts = []
-    for i in range(0, len(test_X_tensor), 128):
-        logits = model(test_X_tensor[i:i+128].to(DEVICE))
-        pred_parts.append(torch.sigmoid(logits).cpu())
-    prob_tensor = torch.cat(pred_parts, dim=0)
+def to_counts(raw, ref_da):
+    """Model output → expected strokes per 12 h."""
+    if LOSS == 'poisson':
+        return np.exp(np.clip(raw, -20, 12))
+    da = xr.DataArray(raw, dims=['time', 'lat', 'lon'],
+                      coords={'time': ref_da.time.values, 'lat': ref_da.lat.values, 'lon': ref_da.lon.values})
+    t = (da.groupby('time.month') * train_y_std['ltg']).groupby('time.month') + train_y_mean['ltg']
+    return np.expm1(t.clip(min=0)).values
 
-prob_np        = prob_tensor.numpy().squeeze(1)          # (T, H, W)  probabilities 0–1
-pred_binary_np = (prob_np >= 0.5).astype('float32')
+pred_val_raw  = to_counts(predict_raw(val_X_tensor),  obs_counts_val)
+pred_test_raw = to_counts(predict_raw(test_X_tensor), obs_counts_test)
 
-# ── Save predictions ───────────────────────────────────────────────────────────
-out_path = '/home/ec2-user/ML_Thesis_with_DL/data/unet_binary_OND_predictions.nc'
+# ── 7. Quantile-mapping calibration (fit on VALIDATION year only) ──────────────
+def fit_quantile_map(pred, obs):
+    # dense probabilities in the upper tail, where all the lightning lives
+    probs = np.unique(np.concatenate([np.linspace(0, 0.9, 200), 1 - np.logspace(-6, -1, 2000)]))
+    qp = np.quantile(pred.ravel(), probs)
+    qo = np.quantile(np.nan_to_num(obs).ravel(), probs)
+    qp = np.maximum.accumulate(qp) + np.arange(len(qp)) * 1e-12     # strictly increasing for interp
+    return qp, qo
+
+if CALIBRATE:
+    qp, qo = fit_quantile_map(pred_val_raw, obs_counts_val.values)
+    pred_test = np.interp(pred_test_raw, qp, qo).reshape(pred_test_raw.shape)
+    print(f"Quantile mapping fitted on {VAL_YEARS}: "
+          f"val mean pred {pred_val_raw.mean():.3f} → obs {np.nanmean(obs_counts_val.values):.3f}", flush=True)
+else:
+    pred_test = pred_test_raw
+
+# ── 8. Save ────────────────────────────────────────────────────────────────────
 dims   = ['time', 'lat', 'lon']
-coords = {
-    'time': test_dataset_cnn_y['time'].values,
-    'lat':  test_dataset_cnn_y['lat'].values,
-    'lon':  test_dataset_cnn_y['lon'].values,
+coords = {'time': obs_counts_test.time.values, 'lat': obs_counts_test.lat.values,
+          'lon': obs_counts_test.lon.values}
+loss_desc = {'poisson': 'Poisson NLL on raw strokes (predicts mean)',
+             'log_mse': 'MSE on z-scored log1p(strokes)'}[LOSS]
+calib_desc = f'quantile mapping fitted on {VAL_YEARS}' if CALIBRATE else 'none'
+
+data_vars = {
+    'pred_count':     xr.DataArray(pred_test.astype('float32'), dims=dims, coords=coords,
+                                   attrs={'description': f'predicted strokes per {AGG_HOURS} h '
+                                                         f'(calibration: {calib_desc})'}),
+    'pred_count_raw': xr.DataArray(pred_test_raw.astype('float32'), dims=dims, coords=coords,
+                                   attrs={'description': 'model output before calibration'}),
+    'obs_count':      obs_counts_test.astype('float32'),
 }
+if LOSS == 'poisson':
+    data_vars['pred_prob'] = xr.DataArray((1 - np.exp(-pred_test_raw)).astype('float32'), dims=dims,
+                                          coords=coords,
+                                          attrs={'description': 'P(at least 1 stroke) = 1 - exp(-rate)'})
+ds_out = xr.Dataset(data_vars, attrs={
+    'agg_hours': AGG_HOURS, 'loss': LOSS, 'loss_desc': loss_desc, 'calibration': calib_desc,
+    'log_target': int(LOG_TARGET), 'val_years': str(VAL_YEARS), 'test_years': str(TEST_YEARS),
+    'excluded_years': str(EXCLUDE_YEARS)})
+ds_out.to_netcdf(OUT_PATH)
+print(f"Saved → {OUT_PATH}", flush=True)
 
-ds_out = xr.Dataset({
-    'prob': xr.DataArray(prob_np,        dims=dims, coords=coords),
-    'pred': xr.DataArray(pred_binary_np, dims=dims, coords=coords),
-})
-ds_out.to_netcdf(out_path)
-print(f"Saved → {out_path}", flush=True)
+# ── 9. Metrics (raw and calibrated) ────────────────────────────────────────────
+obs_np = np.nan_to_num(obs_counts_test.values.astype('float32'))
 
-# ── Metrics ────────────────────────────────────────────────────────────────────
-from scipy.ndimage import uniform_filter
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+def compute_fss(obs, pred, threshold=FSS_THRESHOLD, window_size=FSS_WINDOW):
+    ob = (obs >= threshold).astype(float); pb = (pred >= threshold).astype(float)
+    of = uniform_filter(ob, size=window_size, mode='constant', cval=0)
+    pf = uniform_filter(pb, size=window_size, mode='constant', cval=0)
+    den = np.sum(pf ** 2 + of ** 2)
+    return np.nan if den == 0 else 1 - np.sum((pf - of) ** 2) / den
 
-obs_count_np  = test_dataset_cnn_y['ltg'].values.astype('float32')
-obs_binary_np = (obs_count_np > 0).astype('float32')
-T_test        = len(obs_count_np)
+def report(pred, name):
+    o, p = obs_np.ravel(), pred.ravel()
+    clim_o, clim_p = obs_np.mean(0).ravel(), pred.mean(0).ravel()
+    fss = np.array([compute_fss(obs_np[i], pred[i]) for i in range(len(obs_np))])
+    print(f"\n  [{name}]")
+    print(f"  Mean strokes obs / pred   : {o.mean():.3f} / {p.mean():.3f}  (ratio {p.mean() / max(o.mean(), 1e-9):.2f})")
+    print(f"  Event rate obs / pred     : {(o >= FSS_THRESHOLD).mean():.4f} / {(p >= FSS_THRESHOLD).mean():.4f}")
+    print(f"  R² per-cell climatology   : {r2_score(clim_o, clim_p):.3f}  (r = {pearsonr(clim_o, clim_p)[0]:.3f})")
+    print(f"  R² all pixels (log1p)     : {r2_score(np.log1p(o), np.log1p(p)):.3f}")
+    print(f"  Mean FSS (3×3, ≥1)        : {np.nanmean(fss):.3f}")
 
-obs_flat  = obs_binary_np.ravel().astype(int)
-pred_flat = pred_binary_np.ravel().astype(int)
-acc  = accuracy_score(obs_flat, pred_flat)
-prec = precision_score(obs_flat, pred_flat, zero_division=0)
-rec  = recall_score(obs_flat, pred_flat, zero_division=0)
-f1   = f1_score(obs_flat, pred_flat, zero_division=0)
-
-def compute_fss(obs, pred, threshold, window_size):
-    obs_bin   = (obs  >= threshold).astype(int)
-    pred_bin  = (pred >= threshold).astype(int)
-    obs_frac  = uniform_filter(obs_bin.astype(float),  size=window_size, mode='constant', cval=0)
-    pred_frac = uniform_filter(pred_bin.astype(float), size=window_size, mode='constant', cval=0)
-    num = np.sum((pred_frac - obs_frac) ** 2)
-    den = np.sum(pred_frac**2 + obs_frac**2)
-    return np.nan if den == 0 else 1 - num / den
-
-THRESHOLD, WINDOW = 0.5, 3
-fss_scores = [compute_fss(obs_binary_np[i], pred_binary_np[i], THRESHOLD, WINDOW) for i in range(T_test)]
-fss_arr    = np.array(fss_scores)
-fss_valid  = fss_arr[np.isfinite(fss_arr)]
-
-print(f"\n{'='*52}")
-print(f"  TEST SET METRICS  (2024-2025, {T_test} timesteps)")
-print(f"{'='*52}")
-print(f"  Accuracy            : {acc:.4f}")
-print(f"  Precision           : {prec:.4f}")
-print(f"  Recall              : {rec:.4f}")
-print(f"  F1 score            : {f1:.4f}")
-print(f"  Mean FSS (3×3)      : {np.nanmean(fss_valid):.4f}")
-print(f"  Median FSS          : {np.nanmedian(fss_valid):.4f}")
-print(f"{'='*52}", flush=True)
+print(f"\n{'='*58}\n  TEST SET  {TEST_YEARS}  — LOSS={LOSS}\n{'='*58}")
+report(pred_test_raw, 'raw model output')
+if CALIBRATE:
+    report(pred_test, 'quantile-mapped')
+print(f"{'='*58}", flush=True)
