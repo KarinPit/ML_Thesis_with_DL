@@ -116,6 +116,17 @@ app.layout = html.Div([
                 ),
             ], style={'width': '700px'}),
         ]),
+
+        html.Div([
+            dcc.Checklist(
+                id='ltg-overlay',
+                options=[{'label': '  ⚡ Show lightning overlay', 'value': 'show'}],
+                value=[],
+                style={'fontFamily': 'Arial', 'fontSize': '14px', 'fontWeight': 'bold',
+                       'color': '#c0392b', 'marginLeft': '30px', 'whiteSpace': 'nowrap'}
+            ),
+        ], style={'display': 'flex', 'alignItems': 'center'}),
+
     ], style={'display': 'flex', 'alignItems': 'center', 'padding': '10px 20px',
               'flexWrap': 'wrap', 'fontFamily': 'Arial'}),
 
@@ -141,8 +152,9 @@ app.layout = html.Div([
     Output('time-display','children'),
     Input('var-dropdown', 'value'),
     Input('time-slider',  'value'),
+    Input('ltg-overlay',  'value'),
 )
-def update(var, t_idx):
+def update(var, t_idx, ltg_overlay):
     ts  = all_times[t_idx]
     arr = ds_12h[var].isel(time=t_idx).values.copy()   # (lat, lon)
     arr = np.nan_to_num(arr, nan=0.0)   # replace NaNs with 0 for display
@@ -200,6 +212,26 @@ def update(var, t_idx):
         hoverongaps=False,
         hovertemplate='lon: %{x:.2f}°<br>lat: %{y:.2f}°<br>value: %{z:.4f}<extra></extra>',
     ))
+
+    # ── Lightning overlay ──────────────────────────────────────────────────────
+    if 'show' in (ltg_overlay or []) and var != 'ltg':
+        ltg_arr = np.nan_to_num(ds_12h['ltg'].isel(time=t_idx).values, nan=0.0)
+        lat_grid, lon_grid = np.meshgrid(lats, lons, indexing='ij')
+        mask = ltg_arr > 0
+        if mask.any():
+            counts = ltg_arr[mask]
+            sizes  = np.clip(3 + np.log1p(counts) * 2, 3, 14).astype(float)
+            fig.add_trace(go.Scatter(
+                x=lon_grid[mask].ravel(),
+                y=lat_grid[mask].ravel(),
+                mode='markers',
+                marker=dict(color='yellow', size=sizes, opacity=0.85,
+                            line=dict(color='orange', width=0.4)),
+                name='Lightning',
+                hovertemplate='lon: %{x:.2f}°<br>lat: %{y:.2f}°<br>ltg: %{text}<extra></extra>',
+                text=[str(int(c)) for c in counts],
+                showlegend=True,
+            ))
 
     # Overlay country borders
     if BORDER_LONS:
