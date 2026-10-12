@@ -1,15 +1,15 @@
 """
-case_check.py — is it the model or the inputs?
+checks.py — is it the model or the inputs?
 
 For the biggest test-set lightning events, shows what the ERA5 inputs looked like, and checks
 whether any year (e.g. 2025) has missing / anomalous input data.
 
 Usage:
-    python case_check.py                                        # default: poisson predictions
-    python case_check.py unet_12h_log_mse_OND_predictions.nc
+    python checks.py                                        # default: poisson predictions
+    python checks.py unet_12h_log_mse_OND_predictions.nc
 Outputs: printed tables + figures/case_check_inputs.png
 """
-import os, sys, warnings
+import os, sys, ast, warnings
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -32,7 +32,6 @@ FEATURES  = ['cape', 'precipitation', 'lsm', 'rh', 't2m', 'wcd',
 SHOW      = ['precipitation', 'total_column_cloud_ice_water', 'cape', 'total_totals_index']
 N_CASES   = 4
 STORM_MIN = 10.0      # strokes / 12 h: pixels counted as "inside a storm"
-TRAIN_END = 2022
 
 # ── Load ─────────────────────────────────────────────────────────────────────
 pred = xr.open_dataset(PRED_PATH)
@@ -41,6 +40,18 @@ print(f"Predictions: {PRED_PATH}  (loss={pred.attrs.get('loss', '?')}, "
       f"calibration={pred.attrs.get('calibration', '?')})\n")
 
 years = ds.time.dt.year.values
+
+# Training years = everything not used for validation/test/excluded (read from the run that made
+# the predictions, so this stays correct when the split changes).
+def _years_attr(name, default):
+    try:
+        return list(ast.literal_eval(pred.attrs[name]))
+    except (KeyError, ValueError, SyntaxError):
+        return default
+held_out    = _years_attr('val_years', [2021]) + _years_attr('test_years', [2022, 2024]) \
+              + _years_attr('excluded_years', [2023, 2025])
+TRAIN_YEARS = [int(y) for y in np.unique(years) if y not in held_out]
+print(f"Training years used as the reference: {TRAIN_YEARS}\n")
 ltg   = ds['ltg'].fillna(0)
 
 # ── 1. Input sanity per year ─────────────────────────────────────────────────
@@ -77,11 +88,11 @@ for yr in np.unique(years):
         r[v[:14]] = float(ds[v].sel(time=sel).where(m).mean())
     rows.append(r)
 t2 = pd.DataFrame(rows).set_index('year')
-train = t2.loc[t2.index <= TRAIN_END]
+train = t2.loc[t2.index.isin(TRAIN_YEARS)]
 z = (t2 - train.mean()) / train.std()
 with pd.option_context('display.width', 250, 'display.max_columns', 40, 'display.float_format', '{:.3g}'.format):
     print(t2)
-    print("\n   z-score vs training years (|z| > 3 is suspicious):")
+    print(f"\n   z-score vs training years {TRAIN_YEARS[0]}–{TRAIN_YEARS[-1]} (|z| > 3 is suspicious):")
     print(z.drop(columns='n_storm_px').round(1))
 
 # ── 3. Skill per test year ───────────────────────────────────────────────────
@@ -112,7 +123,7 @@ lats, lons = pred.lat.values, pred.lon.values
 # colour limits from TRAINING storms, so an "empty" test field is obvious
 lims = {}
 for v in SHOW:
-    a = ds[v].sel(time=ds.time.dt.year <= TRAIN_END).values
+    a = ds[v].sel(time=ds.time.dt.year.isin(TRAIN_YEARS)).values
     lims[v] = (np.nanpercentile(a, 1), np.nanpercentile(a, 99.5))
 
 try:

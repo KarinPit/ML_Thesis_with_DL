@@ -1,7 +1,7 @@
 """
-unet_12h.py — 12-hourly lightning U-Net with an intensity-preserving loss.
+train_unet.py — 12-hourly lightning U-Net with an intensity-preserving loss.
 
-Replaces unet_12h_log.py. Two loss options (same data, model and split, so they compare cleanly):
+Two loss options (same data, model and split, so they compare cleanly):
 
   LOSS = 'poisson'  (recommended)  model predicts log(expected strokes); Poisson loss on raw counts.
                     The prediction is the MEAN number of strokes, so monthly means match observations.
@@ -44,7 +44,8 @@ ACTIVE_MONTHS = [10, 11, 12]
 AGG_HOURS     = 12
 
 # Years left out completely (not used for training, validation or testing):
-#   2025 — precipitation is all zeros in the source file (data gap)
+#   2025 — precipitation is all zeros in the source file (IMERG data gap). After re-downloading
+#          IMERG 2025 and rebuilding the data files, remove 2025 from this list.
 #   2023 — unusual year (few storms, mostly over land)
 EXCLUDE_YEARS = [2023, 2025]
 VAL_YEARS     = [2021]
@@ -74,9 +75,36 @@ print(f"Using device: {DEVICE} | LOSS={LOSS} | CALIBRATE={CALIBRATE}", flush=Tru
 random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
 
 
-# ── 1. 12-hourly dataset (built once, cached) ──────────────────────────────────
+# ── 1. 12-hourly dataset (cached; rebuilt automatically when settings or source data change) ──
+CACHE_KEY = {
+    'agg_hours': AGG_HOURS,
+    'months':    ACTIVE_MONTHS,
+    'domain':    [LAT_MIN, LAT_MAX, LON_MIN, LON_MAX],
+    'variables': feature_name + output_name,
+    'wcd_min':   WCD_MIN,
+}
+
+def source_stamp():
+    """Modification time of the hourly source file (None if it isn't on this machine)."""
+    return f"{os.path.getmtime(DATA_PATH):.0f}" if os.path.exists(DATA_PATH) else None
+
+def cache_status():
+    """(is_valid, reason). The cache is only reused if it was built with the same settings
+    from the same version of the hourly file."""
+    if not os.path.exists(PREP_PATH):
+        return False, 'no cached file yet'
+    with xr.open_dataset(PREP_PATH) as c:
+        attrs = dict(c.attrs)
+    for k, v in CACHE_KEY.items():
+        if attrs.get(k) != str(v):
+            return False, f"setting '{k}' differs (cache: {attrs.get(k)}, now: {v})"
+    stamp = source_stamp()
+    if stamp is not None and attrs.get('source_mtime') != stamp:
+        return False, f'{os.path.basename(DATA_PATH)} changed since the cache was built'
+    return True, 'settings and source file unchanged'
+
 def build_aggregated():
-    print(f"Building {AGG_HOURS}-hourly dataset from hourly file (one-time)...", flush=True)
+    print(f"Building {AGG_HOURS}-hourly dataset from hourly file...", flush=True)
     ds = xr.open_dataset(DATA_PATH)
     lat_mask = (ds.lat >= LAT_MIN) & (ds.lat <= LAT_MAX)
     lon_mask = (ds.lon >= LON_MIN) & (ds.lon <= LON_MAX)
@@ -90,21 +118,42 @@ def build_aggregated():
             continue
         if 'wcd' in d:
             d['wcd'] = d['wcd'].fillna(0).clip(min=WCD_MIN)
-        rs   = f'{AGG_HOURS}h'
-        X    = d[feature_name].resample(time=rs).mean()
-        y    = d[output_name].resample(time=rs).sum(min_count=1)
-        nhrs = d['time'].resample(time=rs).count()
-        agg  = xr.merge([X, y]).sel(time=nhrs.time[nhrs == AGG_HOURS])
+
+        # Flag variables that are zero everywhere for the whole year: that is missing data
+        # stored as 0 (like the 2025 IMERG gap), not real zeros.
+        for v in feature_name:
+            if v != 'lsm' and float((d[v] == 0).mean()) > 0.999:
+                print(f"  WARNING {yr}: '{v}' is zero everywhere — almost certainly missing data!",
+                      flush=True)
+
+        # An hour is valid only if every variable has data somewhere in the domain
+        # (wcd excluded: it is legitimately NaN where there is no cloud, and was filled above).
+        check_vars = [v for v in feature_name + output_name if v != 'wcd']
+        hour_ok = xr.concat([d[v].notnull().any(['lat', 'lon']) for v in check_vars], dim='v').all('v')
+
+        rs     = f'{AGG_HOURS}h'
+        X      = d[feature_name].resample(time=rs).mean()
+        y      = d[output_name].resample(time=rs).sum(min_count=1)
+        nhrs   = d['time'].resample(time=rs).count()            # hours present in the window
+        nvalid = hour_ok.resample(time=rs).sum()                # hours with all variables present
+        keep   = (nhrs == AGG_HOURS) & (nvalid == AGG_HOURS)    # complete windows only
+        agg    = xr.merge([X, y]).sel(time=nhrs.time[keep])
         parts.append(agg.astype('float32'))
-        print(f"  {yr}: {d.sizes['time']} hourly → {agg.sizes['time']} × {AGG_HOURS}h", flush=True)
+        n_gap = int(((nhrs == AGG_HOURS) & (nvalid < AGG_HOURS)).sum())
+        print(f"  {yr}: {d.sizes['time']} hourly → {agg.sizes['time']} × {AGG_HOURS}h"
+              + (f"  ({n_gap} windows dropped: missing data)" if n_gap else ""), flush=True)
     out = xr.concat(parts, dim='time')
+    out.attrs.update({k: str(v) for k, v in CACHE_KEY.items()})
+    out.attrs['source_mtime'] = source_stamp()
     out.to_netcdf(PREP_PATH)
     return out
 
-if os.path.exists(PREP_PATH):
-    print(f"Loading cached {AGG_HOURS}-hourly dataset: {PREP_PATH}", flush=True)
+valid, reason = cache_status()
+if valid:
+    print(f"Loading cached {AGG_HOURS}-hourly dataset: {PREP_PATH} ({reason})", flush=True)
     ds = xr.open_dataset(PREP_PATH).load()
 else:
+    print(f"Rebuilding cache: {reason}", flush=True)
     ds = build_aggregated()
 
 n_lat = (ds.sizes['lat'] // 4) * 4

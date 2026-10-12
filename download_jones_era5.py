@@ -40,8 +40,7 @@ PRESSURE_LEVEL_VARS = [
     # ── Jones et al. (2025) CPLRSTW pressure-level variables ──────────────────
     'u_component_of_wind',   # u at 500 & 1000 hPa — used to derive SHEAR
     'v_component_of_wind',   # v at 500 & 1000 hPa — used to derive SHEAR
-    'specific_humidity',     # q at 500 & 1000 hPa — used to derive RH
-    'temperature',           # T at 500 & 1000 hPa — used to derive RH
+    # temperature and specific_humidity (listed above) are also used to derive RH
     # Note: relative_humidity not in ARCO-ERA5; derived from q and T instead
 ]
 

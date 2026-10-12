@@ -1,15 +1,24 @@
 """
-build_jones_netcdf_direct.py
------------------------------
+build_jones_netcdf.py
+---------------------
 Builds one jones_israel_{year}.nc per year DIRECTLY from downloaded NetCDF files,
 skipping the parquet intermediate step entirely.
+
+Usage:
+    python build_jones_netcdf.py                           # build missing years, then combine
+    python build_jones_netcdf.py --years 2025 --overwrite  # rebuild a year (e.g. after re-downloading IMERG)
+    python build_jones_netcdf.py --allow-gaps              # keep years with missing IMERG hours (as NaN)
+
+Missing data stays NaN; it is never filled with 0 (a missing hour of rain or lightning is not
+"no rain" / "no lightning"). A year whose IMERG file does not cover every hour is skipped with
+an error, unless --allow-gaps is given.
 
 Input files (per year, all in data/):
   jones_single_level_{year}.nc    → CAPE, LSM, T2M, WCD (+ k_index, etc.)
   jones_pressure_level_{year}.nc  → RH avg, wind shear (pre-derived),
                                     vertical_velocity at levels 500+1000 hPa
   imerg_hourly_{year}.nc          → precipitation
-  wwln_on_era5_grid_{year}.nc     → lightning_count (optional — fills 0 if absent)
+  wwln_on_era5_grid_{year}.nc     → lightning_count (optional — NaN if absent)
 
 Output (one file per year):
   data/jones_israel_{year}.nc
@@ -22,7 +31,9 @@ To load all years lazily during training:
 """
 
 import os
+import argparse
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -31,7 +42,7 @@ DATA_DIR = 'data'
 ALL_YEARS = list(range(2013, 2026))   # 2013–2025 inclusive
 
 
-def build_year(year: int) -> xr.Dataset:
+def build_year(year: int, allow_gaps: bool = False) -> xr.Dataset:
     """Read all source NetCDFs for one year and return a combined xr.Dataset."""
 
     # ── Paths ──────────────────────────────────────────────────────────────────
@@ -51,7 +62,7 @@ def build_year(year: int) -> xr.Dataset:
 
     lightning_available = os.path.exists(lightning_path)
     if not lightning_available:
-        print(f"  NOTE {year}: {os.path.basename(lightning_path)} not found — ltg will be 0")
+        print(f"  WARNING {year}: {os.path.basename(lightning_path)} not found — ltg will be NaN (missing)")
 
     print(f"\n{'='*50}")
     print(f"  Processing year {year}")
@@ -70,8 +81,9 @@ def build_year(year: int) -> xr.Dataset:
 
     print(f"  Grid: {len(times)} timesteps × {len(lats)} lat × {len(lons)} lon")
 
-    def align(ds, fill=np.nan):
-        """Reindex dataset to reference time/lat/lon grid."""
+    def align(ds):
+        """Reindex dataset to the reference time/lat/lon grid. Anything without a match stays
+        NaN (= missing); it is never filled with 0."""
         lat_name = 'latitude'  if 'latitude'  in ds.coords else 'lat'
         lon_name = 'longitude' if 'longitude' in ds.coords else 'lon'
         rename = {}
@@ -81,15 +93,16 @@ def build_year(year: int) -> xr.Dataset:
             rename[lon_name] = 'lon'
         if rename:
             ds = ds.rename(rename)
-        ds = ds.reindex(time=times, lat=lats, lon=lons,
-                        method='nearest', tolerance=1e9)  # 1e9 ns ≈ 1 s
-        return ds.fillna(fill)
+        # separate tolerances: 1 s for time, 0.01° for lat/lon (a shifted grid → NaN, not a silent match)
+        ds = ds.reindex(time=times, method='nearest', tolerance=np.timedelta64(1, 's'))
+        ds = ds.reindex(lat=lats, lon=lons, method='nearest', tolerance=0.01)
+        return ds
 
     ds_jones_s = align(ds_jones_s)
     ds_jones_p = align(ds_jones_p)
-    ds_imerg   = align(ds_imerg,  fill=0.0)
+    ds_imerg   = align(ds_imerg)
     if ds_light is not None:
-        ds_light = align(ds_light, fill=0)
+        ds_light = align(ds_light)
 
     # ── Helper: safely extract a variable (returns NaN array if missing) ─────────
     def get_sl(name, alt=None):
@@ -153,12 +166,34 @@ def build_year(year: int) -> xr.Dataset:
     precip_var = 'precipitation' if 'precipitation' in ds_imerg else list(ds_imerg.data_vars)[0]
     precip = ds_imerg[precip_var].values.astype('float32')
 
+    # IMERG coverage check: every hour must be present. (Missing hours used to be filled with
+    # 0 mm/h — that is how Oct–Dec 2025 ended up as "no rain".)
+    hour_missing = np.isnan(precip).all(axis=(1, 2))
+    if hour_missing.any():
+        by_month = pd.DatetimeIndex(times[hour_missing]).to_period('M').value_counts().sort_index()
+        print(f"  WARNING {year}: IMERG is missing for {int(hour_missing.sum())} of {len(times)} hours:")
+        for month, n in by_month.items():
+            print(f"    {month}: {n} hours missing")
+        if not allow_gaps:
+            print(f"  SKIP {year} — re-download IMERG first: "
+                  f"python download_imerg.py --years {year} --overwrite "
+                  f"(or rerun with --allow-gaps to keep the gaps as NaN)")
+            return None
+
     # ── Target — lightning count ──────────────────────────────────────────────
     if ds_light is not None:
         ltg_var = 'lightning_count' if 'lightning_count' in ds_light else list(ds_light.data_vars)[0]
         ltg = ds_light[ltg_var].values.astype('float32')
+        if 'data_available' in ds_light:
+            no_data = ~(ds_light['data_available'].values == 1)   # also True for NaN (hour not in file)
+            ltg[no_data] = np.nan
+            if no_data.any():
+                print(f"  NOTE {year}: no WWLN data for {int(no_data.sum())} hours — ltg set to NaN there")
+        else:
+            print(f"  NOTE {year}: WWLN file has no 'data_available' flag, so days without a .loc file "
+                  f"look like 'no lightning'. Re-run: python process_wwln.py --year {year}")
     else:
-        ltg = np.zeros((len(times), len(lats), len(lons)), dtype='float32')
+        ltg = np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
 
     # ── Build output dataset ───────────────────────────────────────────────────
     coords = {'time': times, 'lat': lats, 'lon': lons}
@@ -214,24 +249,45 @@ def build_year(year: int) -> xr.Dataset:
 # One file per year — avoids OOM from concatenating all years in memory.
 # Re-running is safe: existing files are skipped automatically.
 
+parser = argparse.ArgumentParser(description='Build jones_israel_{year}.nc files and combine them.')
+parser.add_argument('--years', type=int, nargs='+', default=None,
+                    help='years to build/rebuild (default: all years whose file does not exist yet)')
+parser.add_argument('--overwrite', action='store_true',
+                    help='rebuild year files that already exist (only the years given with --years)')
+parser.add_argument('--allow-gaps', action='store_true',
+                    help='keep years with missing IMERG hours (gaps stay NaN) instead of skipping them')
+args = parser.parse_args()
+build_years = args.years or ALL_YEARS
+if args.overwrite and not args.years:
+    parser.error('--overwrite needs --years (so existing years are not rebuilt by accident)')
+
 saved = []
 
 for year in ALL_YEARS:
     out_path = os.path.join(DATA_DIR, f'jones_israel_{year}.nc')
 
-    if os.path.exists(out_path):
-        print(f"  SKIP {year} — already exists ({out_path})")
+    if os.path.exists(out_path) and not (args.overwrite and year in build_years):
+        with xr.open_dataset(out_path) as old:
+            built_by_old_version = 'missing_data' not in old.attrs
+        print(f"  SKIP {year} — already exists ({out_path})"
+              + ("\n         built by an older version that filled missing data with 0; "
+                 f"rebuild with: --years {year} --overwrite" if built_by_old_version else ""))
         saved.append(out_path)
         continue
+    if year not in build_years:
+        continue
 
-    ds = build_year(year)
+    ds = build_year(year, allow_gaps=args.allow_gaps)
     if ds is None:
+        if os.path.exists(out_path):
+            print(f"  NOTE: the old {out_path} was NOT replaced and is left out of the combined file.")
         continue
 
     ds.attrs['description']  = 'Jones et al. CPLRSTW features + lightning target, Israel/E. Med domain'
     ds.attrs['created_by']   = 'Karin Pitlik'
     ds.attrs['source_files'] = 'ERA5 (Jones download), IMERG, WWLN'
     ds.attrs['year']         = str(year)
+    ds.attrs['missing_data'] = 'kept as NaN (never filled with 0)'
 
     print(f"  Saving → {out_path} ...")
     ds.to_netcdf(out_path)

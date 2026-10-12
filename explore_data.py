@@ -9,6 +9,8 @@ Features:
   - Map of the selected variable at the selected timestep
   - Stats panel: mean, std, median, NaN count, min, max
   - For ltg: also shows % of grid cells with lightning
+  - Warns when a field is entirely missing (NaN) or zero everywhere (= likely missing data)
+  - Missing values (NaN) are drawn in grey, so gaps can't be mistaken for zeros
 
 Usage (on EC2 or locally):
     pip install plotly dash
@@ -61,7 +63,7 @@ ds = xr.open_dataset(DATA_PATH)
 feature_vars = [v for v in ds.data_vars if v != 'ltg']
 print(f"Variables found in dataset: {feature_vars}", flush=True)
 ds_feat = ds[feature_vars].resample(time='12h').mean()
-ds_ltg  = ds[['ltg']].resample(time='12h').sum()
+ds_ltg  = ds[['ltg']].resample(time='12h').sum(min_count=1)   # all-missing window stays NaN
 ds_12h  = xr.merge([ds_feat, ds_ltg])
 
 # resample() fills gaps between years with NaN rows — drop them by keeping only Sep-Dec
@@ -156,8 +158,7 @@ app.layout = html.Div([
 )
 def update(var, t_idx, ltg_overlay):
     ts  = all_times[t_idx]
-    arr = ds_12h[var].isel(time=t_idx).values.copy()   # (lat, lon)
-    arr = np.nan_to_num(arr, nan=0.0)   # replace NaNs with 0 for display
+    arr = ds_12h[var].isel(time=t_idx).values.astype(float)   # (lat, lon); NaN = missing data
 
     # ── Stats ──────────────────────────────────────────────────────────────────
     flat     = arr.ravel()
@@ -185,7 +186,22 @@ def update(var, t_idx, ltg_overlay):
         pct_ltg = 100.0 * float((arr > 0).sum()) / arr.size
         stat_items.append(('% cells with lightning', f'{pct_ltg:.2f}%'))
 
+    # Data-quality warnings (missing data stored as NaN or as zeros)
+    warning = None
+    if valid.size == 0:
+        warning = 'All values missing (NaN)'
+    elif var not in ('ltg', 'lsm') and np.all(valid == 0):
+        warning = 'Zero everywhere: probably missing data'
+    elif nan_count > 0:
+        warning = f'{100 * nan_count / flat.size:.1f}% missing (grey)'
+
     stat_boxes = []
+    if warning:
+        stat_boxes.append(html.Div([
+            html.Div('⚠ Data check', style={'fontSize': '12px', 'color': '#b03a2e'}),
+            html.Div(warning, style={'fontSize': '16px', 'fontWeight': 'bold', 'color': '#b03a2e'}),
+        ], style={'backgroundColor': '#fdecea', 'borderRadius': '8px', 'padding': '10px 20px',
+                  'boxShadow': '0 1px 4px rgba(0,0,0,0.1)', 'minWidth': '130px', 'textAlign': 'center'}))
     for label, val in stat_items:
         stat_boxes.append(html.Div([
             html.Div(label, style={'fontSize': '12px', 'color': '#666'}),
@@ -199,9 +215,12 @@ def update(var, t_idx, ltg_overlay):
     # ── Map ────────────────────────────────────────────────────────────────────
     colorscale = 'YlOrRd' if var == 'ltg' else 'RdBu_r'
 
-    # Zero → NaN so zeros render as transparent (no color)
-    plot_arr = arr.astype(float).copy()
-    plot_arr[plot_arr == 0] = np.nan
+    # Lightning: zeros transparent (no strokes) on a light-blue background.
+    # Other variables: zeros keep their colour; only true gaps (NaN) are transparent and show
+    # the grey background, so missing data is never confused with a real zero.
+    plot_arr = arr.copy()
+    if var == 'ltg':
+        plot_arr[plot_arr == 0] = np.nan
 
     fig = go.Figure(go.Heatmap(
         z=plot_arr,
@@ -248,7 +267,7 @@ def update(var, t_idx, ltg_overlay):
         xaxis_title='Longitude',
         yaxis_title='Latitude',
         margin=dict(l=50, r=20, t=50, b=40),
-        plot_bgcolor='#cce5ff',
+        plot_bgcolor='#cce5ff' if var == 'ltg' else '#9e9e9e',   # grey = missing data
         paper_bgcolor='white',
         font=dict(family='Arial'),
         xaxis=dict(range=[float(lons.min()), float(lons.max())], constrain='domain'),

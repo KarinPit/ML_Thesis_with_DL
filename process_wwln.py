@@ -12,8 +12,12 @@ WWLN .loc format (comma-separated):
     date, time, lat, lon, residual, num_stations
     e.g.: 2013/04/01,00:00:00.891805, 29.3548, -96.7936, 6.6, 7
 
+Also stores `data_available` (time): 1 for hours covered by a .loc file, 0 for days with no
+file. Hours without data are NOT the same as hours without lightning; build_jones_netcdf.py
+turns them into NaN.
+
 Usage:
-    python process_wwln.py              # all years 2013-2022
+    python process_wwln.py              # all years 2013-2025
     python process_wwln.py --year 2013  # single year
 """
 
@@ -27,7 +31,7 @@ import xarray as xr
 # ── Config ─────────────────────────────────────────────────────────────────────
 DATA_DIR  = 'data'
 WWLN_DIR  = os.path.join(DATA_DIR, 'WWLN')
-YEARS     = list(range(2013, 2025))
+YEARS     = list(range(2013, 2026))   # 2013–2025 inclusive
 
 # ERA5 grid bounds (used only as fallback if no reference file is found)
 LAT_MIN, LAT_MAX = 28.0, 43.435
@@ -77,6 +81,7 @@ def process_year(year: int):
 
     # Accumulator
     counts = np.zeros((n_t, n_lat, n_lon), dtype='int16')
+    available = np.zeros(n_t, dtype='int8')      # 1 = hour covered by a .loc file that was read
 
     # Build time → index map (floor to hour)
     time_index = {t: i for i, t in enumerate(times)}
@@ -93,6 +98,13 @@ def process_year(year: int):
 
     total_strokes = 0
     domain_strokes = 0
+    bad_rows = 0
+
+    # A stroke is kept only if it falls inside one of the grid cells (grid point ± half a cell).
+    # Previously strokes just outside the outermost cells were clipped onto the edge row/column.
+    half = GRID_RES / 2
+    lat_lo, lat_hi = float(lats.min()) - half, float(lats.max()) + half
+    lon_lo, lon_hi = float(lons.min()) - half, float(lons.max()) + half
 
     for fpath in loc_files:
         try:
@@ -104,6 +116,12 @@ def process_year(year: int):
             print(f"  SKIP {os.path.basename(fpath)}: {e}")
             continue
 
+        # This day has data (even if no strokes fall in the domain) → mark its 24 hours available
+        day = pd.Timestamp(os.path.basename(fpath)[1:9])          # A20131001.loc → 2013-10-01
+        i0 = time_index.get(day)
+        if i0 is not None:
+            available[i0:i0 + 24] = 1
+
         total_strokes += len(df)
 
         # Combine date+time into datetime, floor to hour
@@ -113,10 +131,12 @@ def process_year(year: int):
             errors='coerce'
         ).dt.floor('h')
 
-        # Filter to domain
+        bad_rows += int(df['datetime'].isna().sum())
+
+        # Filter to strokes inside the grid cells
         mask = (
-            (df['lat'] >= LAT_MIN) & (df['lat'] <= LAT_MAX) &
-            (df['lon'] >= LON_MIN) & (df['lon'] <= LON_MAX) &
+            (df['lat'] >= lat_lo) & (df['lat'] < lat_hi) &
+            (df['lon'] >= lon_lo) & (df['lon'] < lon_hi) &
             df['datetime'].notna()
         )
         df = df[mask]
@@ -140,6 +160,14 @@ def process_year(year: int):
     print(f"  Total strokes in files:  {total_strokes:,}")
     print(f"  Strokes in domain:       {domain_strokes:,}")
     print(f"  Non-zero grid cells:     {np.count_nonzero(counts):,}")
+    if bad_rows:
+        print(f"  WARNING: {bad_rows:,} rows with unreadable date/time were skipped")
+    season = times.month >= 9
+    missing_days = pd.DatetimeIndex(times[season & (available == 0)]).normalize().unique()
+    if len(missing_days):
+        print(f"  WARNING: no .loc file for {len(missing_days)} day(s) in Sep–Dec "
+              f"(stored as data_available=0): {[d.strftime('%Y-%m-%d') for d in missing_days[:10]]}"
+              + (' ...' if len(missing_days) > 10 else ''))
 
     # Build xarray Dataset
     ds = xr.Dataset(
@@ -152,7 +180,13 @@ def process_year(year: int):
                     'long_name': 'WWLN lightning stroke count per grid cell per hour',
                     'source':    'World Wide Lightning Location Network (WWLN)',
                 }
-            )
+            ),
+            'data_available': xr.DataArray(
+                available,
+                dims=['time'],
+                attrs={'long_name': '1 = WWLN .loc file read for this hour, 0 = no data',
+                       'note': 'lightning_count is 0 for hours without data; treat those as missing'}
+            ),
         },
         coords={
             'time': times,
@@ -174,7 +208,7 @@ def process_year(year: int):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--year', type=int, default=None,
-                        help='Process a single year (default: all 2013–2022)')
+                        help='Process a single year (default: all 2013–2025)')
     args = parser.parse_args()
 
     years_to_run = [args.year] if args.year else YEARS
