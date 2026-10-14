@@ -10,7 +10,7 @@ Figures produced:
   Fig 2 — Monthly FSS bar chart by window size (Oct / Nov / Dec)
   Fig 3 — Metrics summary table
   Fig 4 — Jones-style: test-period mean lightning per cell, modelled vs observed
-           (rows all / land / ocean; columns R14 baseline, U-Net raw, U-Net calibrated)
+           (FIG4_COMPARE = True adds land/ocean rows and R14 / raw / calibrated columns)
   Fig 4b — Observed vs predicted for every pixel × 12-h window
   Fig 5 — Pearson & Spearman correlation of each ERA5 variable vs 12-h lightning (TRAINING years,
            so it can be used to choose inputs without looking at the test set)
@@ -343,6 +343,8 @@ print("Fig 4: Jones-style climatology comparison...", flush=True)
 FIG4_CMAP  = 'turbo'     # Jones-like rainbow look. 'viridis' is safer for colour-blind readers and print.
 FIG4_UNITS = 'density'   # 'density' = strokes km⁻² day⁻¹ (comparable to Jones) | 'cell' = strokes per cell per 12 h
 FIG4_BINS  = 40          # histogram bins per axis (log10 space)
+FIG4_COMPARE = False     # False = one panel: the U-Net, modelled vs observed (all cells)
+                         # True  = grid: rows all/land/ocean × columns R14 baseline, U-Net raw, U-Net calibrated
 PREP_PATH  = os.path.join(DATA_DIR, 'jones_israel_12h_OND.nc')   # 12-hourly cache written by train_unet.py
 
 def _attr_years(name):
@@ -371,6 +373,8 @@ else:
 fig4_models = {}
 lsm2d = None
 try:
+    if not FIG4_COMPARE:
+        raise StopIteration          # single panel: no baseline or land/sea split needed
     cache = xr.open_dataset(PREP_PATH).sel(lat=lats, lon=lons, method='nearest')
     if 'lsm' in cache:
         lsm2d = (cache['lsm'].isel(time=0) if 'time' in cache['lsm'].dims else cache['lsm']).values
@@ -387,26 +391,30 @@ try:
         print(f"  R14 constant fitted on training years {tr_years[0]}–{tr_years[-1]}: c = {c_r14:.3e}", flush=True)
     else:
         print("  cache has no cape/precipitation — R14 column skipped", flush=True)
+except StopIteration:
+    pass
 except Exception as e:
     print(f"  R14 baseline skipped ({e})", flush=True)
 
-if lsm2d is None and os.path.exists(HOURLY_PATH):
+if FIG4_COMPARE and lsm2d is None and os.path.exists(HOURLY_PATH):
     try:
         _l = xr.open_dataset(HOURLY_PATH)['lsm']
         lsm2d = (_l.isel(time=0) if 'time' in _l.dims else _l).sel(lat=lats, lon=lons, method='nearest').values
     except Exception:
         pass
 
-if PRED_VAR == 'pred_count' and 'pred_count_raw' in ds_pred:
+_unet_kind = 'raw' if PRED_VAR == 'pred_count_raw' or ds_pred.attrs.get('calibration', 'none') == 'none' \
+             else 'calibrated'
+if FIG4_COMPARE and PRED_VAR == 'pred_count' and 'pred_count_raw' in ds_pred:
     fig4_models['U-Net (raw)'] = np.nan_to_num(ds_pred['pred_count_raw'].values).mean(0)
     fig4_models['U-Net (calibrated)'] = pred_mean_2d
 else:
-    fig4_models[f'U-Net ({PRED_VAR})'] = pred_mean_2d
+    fig4_models[f'U-Net ({_unet_kind})'] = pred_mean_2d
 
 rows4 = [('', np.ones((n_lat, n_lon), bool))]
-if lsm2d is not None:
+if FIG4_COMPARE and lsm2d is not None:
     rows4 += [('Land', lsm2d >= 0.9), ('Ocean', lsm2d <= 0.1)]
-else:
+elif FIG4_COMPARE:
     print("  no land-sea mask found — only the 'all cells' row is drawn", flush=True)
 
 obs_u = to_units(obs_mean_2d)
@@ -435,7 +443,8 @@ levels = levels + [levels[-1] * 2] if len(levels) > 1 else [1, 2]
 norm4 = mcolors.LogNorm(vmin=1, vmax=levels[-1])
 
 ncol4, nrow4 = len(mod_u), len(rows4)
-fig, axs = plt.subplots(nrow4, ncol4, figsize=(4.4 * ncol4, 4.2 * nrow4), squeeze=False)
+fig, axs = plt.subplots(nrow4, ncol4, figsize=(4.4 * ncol4, 4.2 * nrow4) if FIG4_COMPARE else (6.2, 5.6),
+                        squeeze=False)
 for i, (rname, _) in enumerate(rows4):
     for j, mname in enumerate(mod_u):
         ax = axs[i, j]
@@ -458,9 +467,14 @@ for i, (rname, _) in enumerate(rows4):
         if n_zero:
             print(f"  {mname} {rname or 'all'}: {n_zero} cells with zero observed or modelled mean "
                   f"left out of the log-log density (still in R²)", flush=True)
-fig.suptitle(f'Test-period mean lightning per grid cell, modelled vs observed — Test {TEST_LABEL}, '
-             f'{"–".join(pd.Timestamp(2001, m, 1).strftime("%b") for m in (min(months_arr), max(months_arr)))}'
-             f'   (colours: number of grid cells)', fontsize=12, y=1.0)
+_season = "–".join(pd.Timestamp(2001, m, 1).strftime("%b") for m in (min(months_arr), max(months_arr)))
+if FIG4_COMPARE:
+    fig.suptitle(f'Test-period mean lightning per grid cell, modelled vs observed — Test {TEST_LABEL}, '
+                 f'{_season}   (colours: number of grid cells)', fontsize=12, y=1.0)
+else:
+    axs[0, 0].set_title(f'Modelled vs observed lightning — {list(mod_u)[0]}\n'
+                        f'mean per grid cell, Test {TEST_LABEL} ({_season})', fontsize=11)
+    cb.set_label('number of grid cells', fontsize=8)
 fig.tight_layout()
 fig.savefig(os.path.join(FIG_DIR, 'fig4_r2_scatter.png'), dpi=150, bbox_inches='tight')
 plt.close(fig)
