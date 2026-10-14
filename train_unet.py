@@ -51,6 +51,7 @@ PREP_PATH  = f'{DATA_DIR}/jones_israel_{AGG_HOURS}h_OND.nc'      # cached aggreg
 RUN_NAME   = f'{AGG_HOURS}h_{LOSS}' + ('_jonesnorm' if LOSS == 'mse' and MSE_UNNORM == 'jones' else '')
 CKPT_PATH  = f'{DATA_DIR}/unet_{AGG_HOURS}h_{LOSS}_best.pt'        # same model for both MSE un-normalisations
 OUT_PATH   = f'{DATA_DIR}/unet_{RUN_NAME}_OND_predictions.nc'
+EXTRA_PATH = f'{DATA_DIR}/unet_{RUN_NAME}_OND_predictions_extra.nc'  # predictions for EXTRA_PRED_YEARS
 
 LAT_MIN, LAT_MAX = 30.0, 43.0
 LON_MIN, LON_MAX = 10.0, 39.0
@@ -65,6 +66,11 @@ EXCLUDE_YEARS = [2023, 2025]
 VAL_YEARS     = [2021]
 TEST_YEARS    = [2022, 2024]
 # everything else (2013–2020) is training
+
+# Excluded years that should still get predictions (the model never trains or validates on them), e.g.
+# 2023 for the comparison with the Israeli network (ildn_eval.py). Years without complete inputs
+# (like 2025, no IMERG for Oct–Dec) are skipped automatically. [] = none.
+EXTRA_PRED_YEARS = [2023]
 
 feature_name = ['precipitation', 'total_totals_index', 'ciwc500',
                 'total_column_cloud_ice_water', 'cape', 'k_index',
@@ -88,6 +94,9 @@ FSS_WINDOW    = 3
 
 if LOSS not in ('poisson', 'mse', 'log_mse'):
     sys.exit(f"LOSS must be 'poisson', 'mse' or 'log_mse' (got {LOSS!r})")
+if not set(EXTRA_PRED_YEARS) <= set(EXCLUDE_YEARS):
+    sys.exit(f"EXTRA_PRED_YEARS must be excluded years (never used for training or validation); "
+             f"{sorted(set(EXTRA_PRED_YEARS) - set(EXCLUDE_YEARS))} are not in EXCLUDE_YEARS")
 if MSE_UNNORM not in ('direct', 'jones'):
     sys.exit(f"MSE_UNNORM must be 'direct' or 'jones' (got {MSE_UNNORM!r})")
 if not (isinstance(AGG_HOURS, int) and AGG_HOURS >= 1):
@@ -409,40 +418,59 @@ else:
 
 # ── 8. Save ────────────────────────────────────────────────────────────────────
 dims   = ['time', 'lat', 'lon']
-coords = {'time': obs_counts_test.time.values, 'lat': obs_counts_test.lat.values,
-          'lon': obs_counts_test.lon.values}
 loss_desc = {'poisson': 'Poisson NLL on raw strokes (predicts mean)',
              'mse':     f'MSE on z-scored strokes (Jones et al.; {MSE_UNNORM} un-normalisation)',
              'log_mse': 'MSE on z-scored log1p(strokes)'}[LOSS]
 calib_desc = f'quantile mapping fitted on {VAL_YEARS}' if CALIBRATE else 'none'
 
-data_vars = {
-    'pred_count':     xr.DataArray(pred_test.astype('float32'), dims=dims, coords=coords,
-                                   attrs={'description': f'predicted strokes per {AGG_HOURS} h '
-                                                         f'(calibration: {calib_desc})'}),
-    'pred_count_raw': xr.DataArray(pred_test_raw.astype('float32'), dims=dims, coords=coords,
-                                   attrs={'description': 'model output before calibration'}),
-    'obs_count':      obs_counts_test.astype('float32'),
-}
-if LOSS == 'poisson':
-    data_vars['pred_prob'] = xr.DataArray((1 - np.exp(-pred_test_raw)).astype('float32'), dims=dims,
-                                          coords=coords,
-                                          attrs={'description': 'P(at least 1 stroke) = 1 - exp(-rate)'})
-ds_out = xr.Dataset(data_vars, attrs={
-    'agg_hours': AGG_HOURS, 'loss': LOSS, 'loss_desc': loss_desc, 'calibration': calib_desc,
-    'mse_unnorm': MSE_UNNORM if LOSS == 'mse' else 'n/a',
-    'log_target': int(LOG_TARGET), 'val_years': str(VAL_YEARS), 'test_years': str(TEST_YEARS),
-    'excluded_years': str(EXCLUDE_YEARS),
-    'train_years': json.dumps(TRAIN_YEARS), 'features': json.dumps(list(feature_name)),
-    'ckpt_trained_at': str(run_meta.get('trained_at')),
-    # full configuration, so the figure scripts can label the run and keep different set-ups apart
-    'run_name': RUN_NAME, 'log_features': json.dumps(list(LOG_FEATURES)), 'months': json.dumps(ACTIVE_MONTHS),
-    'domain': json.dumps([LAT_MIN, LAT_MAX, LON_MIN, LON_MAX]), 'wcd_min': WCD_MIN,
-    'fss_threshold': FSS_THRESHOLD, 'fss_window': FSS_WINDOW,
-    'hyperparams': json.dumps(run_meta['hyperparams']), 'model': json.dumps(run_meta['model']),
-    'training': json.dumps(run_meta.get('training'))})
-ds_out.to_netcdf(OUT_PATH)
-print(f"Saved → {OUT_PATH}", flush=True)
+def save_predictions(path, pred, pred_raw, obs, extra_attrs=None):
+    coords = {'time': obs.time.values, 'lat': obs.lat.values, 'lon': obs.lon.values}
+    data_vars = {
+        'pred_count':     xr.DataArray(pred.astype('float32'), dims=dims, coords=coords,
+                                       attrs={'description': f'predicted strokes per {AGG_HOURS} h '
+                                                             f'(calibration: {calib_desc})'}),
+        'pred_count_raw': xr.DataArray(pred_raw.astype('float32'), dims=dims, coords=coords,
+                                       attrs={'description': 'model output before calibration'}),
+        'obs_count':      obs.astype('float32'),
+    }
+    if LOSS == 'poisson':
+        data_vars['pred_prob'] = xr.DataArray((1 - np.exp(-pred_raw)).astype('float32'), dims=dims,
+                                              coords=coords,
+                                              attrs={'description': 'P(at least 1 stroke) = 1 - exp(-rate)'})
+    ds_out = xr.Dataset(data_vars, attrs={
+        'agg_hours': AGG_HOURS, 'loss': LOSS, 'loss_desc': loss_desc, 'calibration': calib_desc,
+        'mse_unnorm': MSE_UNNORM if LOSS == 'mse' else 'n/a',
+        'log_target': int(LOG_TARGET), 'val_years': str(VAL_YEARS), 'test_years': str(TEST_YEARS),
+        'excluded_years': str(EXCLUDE_YEARS),
+        'train_years': json.dumps(TRAIN_YEARS), 'features': json.dumps(list(feature_name)),
+        'ckpt_trained_at': str(run_meta.get('trained_at')),
+        # full configuration, so the figure scripts can label the run and keep different set-ups apart
+        'run_name': RUN_NAME, 'log_features': json.dumps(list(LOG_FEATURES)), 'months': json.dumps(ACTIVE_MONTHS),
+        'domain': json.dumps([LAT_MIN, LAT_MAX, LON_MIN, LON_MAX]), 'wcd_min': WCD_MIN,
+        'fss_threshold': FSS_THRESHOLD, 'fss_window': FSS_WINDOW,
+        'hyperparams': json.dumps(run_meta['hyperparams']), 'model': json.dumps(run_meta['model']),
+        'training': json.dumps(run_meta.get('training')), **(extra_attrs or {})})
+    ds_out.to_netcdf(path)
+    print(f"Saved → {path}", flush=True)
+
+save_predictions(OUT_PATH, pred_test, pred_test_raw, obs_counts_test)
+
+# ── 8b. Extra held-out years (never used for training/validation), e.g. 2023 for ildn_eval.py ──
+extra_years = [y for y in EXTRA_PRED_YEARS if y in set(years.tolist())]
+missing_extra = sorted(set(EXTRA_PRED_YEARS) - set(extra_years))
+if missing_extra:
+    print(f"EXTRA_PRED_YEARS {missing_extra}: no complete {AGG_HOURS}-h windows in the data — skipped", flush=True)
+if extra_years:
+    idx_extra   = np.where(np.isin(years, extra_years))[0]
+    obs_extra   = ds['ltg'].isel(time=idx_extra)
+    extra_X     = to_tensor(zscore_X(ds_model[feature_name].isel(time=idx_extra)))
+    pred_ex_raw = to_counts(predict_raw(extra_X), obs_extra)
+    pred_ex     = np.interp(pred_ex_raw, qp, qo).reshape(pred_ex_raw.shape) if CALIBRATE else pred_ex_raw
+    save_predictions(EXTRA_PATH, pred_ex, pred_ex_raw, obs_extra,
+                     {'prediction_years': json.dumps(extra_years),
+                      'note': 'extra held-out years (excluded from training and validation)'})
+elif os.path.exists(EXTRA_PATH):
+    os.remove(EXTRA_PATH)          # don't leave predictions from an older model lying around
 
 # ── 9. Metrics (raw and calibrated) ────────────────────────────────────────────
 obs_np = np.nan_to_num(obs_counts_test.values.astype('float32'))
