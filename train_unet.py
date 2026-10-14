@@ -15,6 +15,9 @@ CALIBRATE = True  additionally applies quantile mapping fitted on the VALIDATION
 import xarray as xr
 import numpy as np
 import os
+import sys
+import json
+import datetime
 import random
 import math
 import pandas as pd
@@ -29,7 +32,8 @@ import torch.optim as optim
 # ── Config ─────────────────────────────────────────────────────────────────────
 LOSS      = 'poisson'          # 'poisson' or 'log_mse'
 CALIBRATE = True               # quantile-map predictions to the observed distribution (fit on val year)
-RETRAIN   = True               # False = reuse the saved checkpoint (e.g. after fixing test-year data only)
+RETRAIN   = True               # False = reuse the saved checkpoint (e.g. after fixing test-year data only).
+                               # Refused if the checkpoint was trained on different years/inputs (no leakage).
 
 DATA_DIR   = '/home/ec2-user/ML_Thesis_with_DL/data'
 DATA_PATH  = f'{DATA_DIR}/jones_israel_all_years.nc'            # hourly source file
@@ -290,10 +294,35 @@ def train(model, train_inputs, train_targets, val_inputs, val_targets):
                 print(f"Early stopping at epoch {epoch+1}", flush=True)
                 break
 
+# The checkpoint gets a small JSON "passport" with the years and inputs it was trained on, so a
+# checkpoint can never silently be reused with a different split (e.g. one that saw today's test years).
+TRAIN_YEARS = sorted(set(years[idx_train].tolist()))
+CKPT_META_PATH = CKPT_PATH + '.json'
+run_meta = {'train_years': TRAIN_YEARS, 'val_years': list(VAL_YEARS), 'test_years': list(TEST_YEARS),
+            'excluded_years': list(EXCLUDE_YEARS), 'features': list(feature_name), 'loss': LOSS,
+            'log_features': list(LOG_FEATURES), 'agg_hours': AGG_HOURS, 'months': list(ACTIVE_MONTHS)}
+
 if RETRAIN or not os.path.exists(CKPT_PATH):
     train(model, tr_X_tensor, tr_y_tensor, val_X_tensor, val_y_tensor)
+    run_meta['trained_at'] = datetime.datetime.now().isoformat(timespec='seconds')
+    with open(CKPT_META_PATH, 'w') as f:
+        json.dump(run_meta, f, indent=1)
 else:
-    print(f"RETRAIN=False → skipping training, using existing checkpoint {CKPT_PATH}", flush=True)
+    if not os.path.exists(CKPT_META_PATH):
+        sys.exit(f"RETRAIN=False but {CKPT_PATH} has no record of what it was trained on "
+                 f"(made by an older version). Set RETRAIN = True once.")
+    saved_meta = json.load(open(CKPT_META_PATH))
+    leaked = set(saved_meta['train_years']) & set(VAL_YEARS + TEST_YEARS)
+    if leaked:
+        sys.exit(f"Refusing to reuse {CKPT_PATH}: it was trained on {sorted(leaked)}, which are now "
+                 f"validation/test years (data leakage). Set RETRAIN = True.")
+    changed = [k for k in ('train_years', 'features', 'loss', 'log_features', 'agg_hours', 'months')
+               if saved_meta.get(k) != run_meta[k]]
+    if changed:
+        sys.exit(f"Refusing to reuse {CKPT_PATH}: settings changed since it was trained ({changed}). "
+                 f"Set RETRAIN = True.")
+    run_meta['trained_at'] = saved_meta.get('trained_at')
+    print(f"RETRAIN=False → reusing checkpoint trained {run_meta['trained_at']} on {TRAIN_YEARS}", flush=True)
 
 # ── 6. Predictions in stroke counts ────────────────────────────────────────────
 print("Loading best checkpoint...", flush=True)
@@ -358,7 +387,9 @@ if LOSS == 'poisson':
 ds_out = xr.Dataset(data_vars, attrs={
     'agg_hours': AGG_HOURS, 'loss': LOSS, 'loss_desc': loss_desc, 'calibration': calib_desc,
     'log_target': int(LOG_TARGET), 'val_years': str(VAL_YEARS), 'test_years': str(TEST_YEARS),
-    'excluded_years': str(EXCLUDE_YEARS)})
+    'excluded_years': str(EXCLUDE_YEARS),
+    'train_years': json.dumps(TRAIN_YEARS), 'features': json.dumps(list(feature_name)),
+    'ckpt_trained_at': str(run_meta.get('trained_at'))})
 ds_out.to_netcdf(OUT_PATH)
 print(f"Saved → {OUT_PATH}", flush=True)
 

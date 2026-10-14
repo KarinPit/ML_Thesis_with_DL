@@ -10,7 +10,8 @@ Figures produced:
   Fig 2 — Monthly FSS bar chart by window size (Oct / Nov / Dec)
   Fig 3 — Metrics summary table
   Fig 4 — Observed vs predicted scatter (per-cell climatology + all pixels, log scales)
-  Fig 5 — Pearson & Spearman correlation of each ERA5 variable vs 12-h lightning
+  Fig 5 — Pearson & Spearman correlation of each ERA5 variable vs 12-h lightning (TRAINING years,
+           so it can be used to choose inputs without looking at the test set)
   Fig 6 — Case studies: the most active 12-h windows in the test set
 
 Usage (on EC2):
@@ -378,28 +379,56 @@ print("  Saved fig4_r2_scatter.png", flush=True)
 
 
 # ============================================================
-# Fig 5 — Correlation of ERA5 variables with 12-h lightning (test period)
+# Fig 5 — Correlation of ERA5 variables with 12-h lightning (TRAINING years)
 # ============================================================
-print("Fig 5: Correlations...", flush=True)
+# Computed on the training years only: ranking inputs on the test years and then choosing inputs from
+# that ranking would leak test information into the model design.
+print("Fig 5: Correlations (training years)...", flush=True)
+import json as _json, ast as _ast
 SKIP_VARS = {'ltg', 'lsm'}
-ltg_flat  = obs_np.ravel()
 corr_results = {}
 
+def _years_from_attr(name):
+    try:
+        v = ds_pred.attrs[name]
+        return list(_json.loads(v)) if v.strip().startswith('[') and '"' not in v else list(_ast.literal_eval(v))
+    except Exception:
+        return None
+
 if os.path.exists(HOURLY_PATH):
-    ds_h = xr.open_dataset(HOURLY_PATH)
-    t_end = test_times.max() + np.timedelta64(AGG_HOURS - 1, 'h')
-    ds_h  = ds_h.sel(time=slice(test_times.min(), t_end))            # test period only (fast)
-    ds_h  = ds_h.sel(lat=lats, lon=lons, method='nearest')
+    ds_h = xr.open_dataset(HOURLY_PATH).sel(lat=lats, lon=lons, method='nearest')
+    all_years = sorted(set(pd.DatetimeIndex(ds_h.time.values).year))
+    CORR_YEARS = _years_from_attr('train_years')
+    if CORR_YEARS is None:      # older prediction file: everything that is not val/test/excluded
+        held = sum([_years_from_attr(k) or [] for k in ('val_years', 'test_years', 'excluded_years')], [])
+        CORR_YEARS = [y for y in all_years if y not in held]
+    CORR_MONTHS = sorted(set(pd.DatetimeIndex(test_times).month))
+    print(f"  years {CORR_YEARS}, months {CORR_MONTHS}", flush=True)
+
+    def _windows(var, how):
+        parts = []
+        for y in CORR_YEARS:
+            d = ds_h[var].sel(time=(ds_h.time.dt.year == y) & ds_h.time.dt.month.isin(CORR_MONTHS))
+            if d.sizes['time'] == 0:
+                continue
+            r = d.resample(time=f'{AGG_HOURS}h')
+            parts.append((r.sum(min_count=1) if how == 'sum' else r.mean()).values.astype('float32'))
+        return np.concatenate(parts).ravel() if parts else np.array([])
+
+    ltg_flat = _windows('ltg', 'sum')
+    rng_c = np.random.default_rng(0)
+    samp = rng_c.choice(ltg_flat.size, size=min(2_000_000, ltg_flat.size), replace=False)
     feature_vars = [v for v in ds_h.data_vars if v not in SKIP_VARS and 'time' in ds_h[v].dims]
     print(f"  Variables: {feature_vars}", flush=True)
     for var in feature_vars:
         try:
-            arr = ds_h[var].resample(time=f'{AGG_HOURS}h').mean().sel(time=test_times).values.ravel()
-            m = np.isfinite(arr) & np.isfinite(ltg_flat)
+            arr = _windows(var, 'mean')[samp]
+            lt = ltg_flat[samp]
+            m = np.isfinite(arr) & np.isfinite(lt)
             if m.sum() < 100 or np.nanstd(arr[m]) == 0:
                 continue
-            r_p = pearsonr(arr[m], ltg_flat[m])[0]
-            r_s = spearmanr(arr[m], ltg_flat[m])[0]
+            r_p = pearsonr(arr[m], lt[m])[0]
+            r_s = spearmanr(arr[m], lt[m])[0]
             corr_results[var] = (r_p, r_s)
             print(f"    {var:32s} Pearson={r_p:+.3f}  Spearman={r_s:+.3f}", flush=True)
         except Exception as e:
@@ -419,7 +448,7 @@ if corr_results:
     ax.set_xticks(xb)
     ax.set_xticklabels(names, rotation=45, ha='right', fontsize=9)
     ax.set_ylabel(f'Correlation with {AGG_HOURS}-h lightning')
-    ax.set_title(f'ERA5 variables vs lightning — Test {TEST_LABEL}, OND '
+    ax.set_title(f'ERA5 variables vs lightning — training years {CORR_YEARS[0]}–{CORR_YEARS[-1]} '
                  f'(sorted by |Spearman|)', fontsize=11)
     ax.set_ylim(-1, 1)
     ax.legend(fontsize=9)
