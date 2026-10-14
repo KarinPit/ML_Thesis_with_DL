@@ -201,6 +201,14 @@ elif cache_vars != str(FEATURES + [TARGET]):
     report('FAIL', f"cache was built for variables {cache_vars}, settings say {FEATURES + [TARGET]}")
 else:
     report('PASS', 'cache variables match the training settings')
+missing_vars = [v for v in FEATURES + [TARGET] if v not in ds]
+if missing_vars:
+    print(f"\n  STOP: {cfg['PREP_PATH']} has no {missing_vars}.\n"
+          f"  The cached 12-hour file was built with different inputs than {args.config} now lists\n"
+          f"  (cache: {cache_vars or list(ds.data_vars)}).\n"
+          f"  Run 'python {args.config}' first with the inputs you want — it rebuilds the cache and\n"
+          f"  retrains — then run the audit again.")
+    sys.exit(1)
 step = pd.Series(np.diff(ds.time.values)).mode()[0]
 report('PASS' if step == pd.Timedelta(hours=cfg['AGG_HOURS']) else 'FAIL',
        f"time step {step} (expected {cfg['AGG_HOURS']} h)")

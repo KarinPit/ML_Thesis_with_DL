@@ -9,7 +9,9 @@ Figures produced:
   Fig 1 — Monthly mean maps: Observed vs Predicted (Oct / Nov / Dec)
   Fig 2 — Monthly FSS bar chart by window size (Oct / Nov / Dec)
   Fig 3 — Metrics summary table
-  Fig 4 — Observed vs predicted scatter (per-cell climatology + all pixels, log scales)
+  Fig 4 — Jones-style: test-period mean lightning per cell, modelled vs observed
+           (rows all / land / ocean; columns R14 baseline, U-Net raw, U-Net calibrated)
+  Fig 4b — Observed vs predicted for every pixel × 12-h window
   Fig 5 — Pearson & Spearman correlation of each ERA5 variable vs 12-h lightning (TRAINING years,
            so it can be used to choose inputs without looking at the test set)
   Fig 6 — Case studies: the most active 12-h windows in the test set
@@ -332,11 +334,145 @@ print("  Saved fig3_metrics_table.png", flush=True)
 
 
 # ============================================================
-# Fig 4 — Observed vs predicted (log scales)
-#   (a) per-cell mean over the test period (climatology, like Jones Fig. 3/4)
+# Fig 4 — Jones et al. style: test-period mean lightning per grid cell, modelled vs observed
+#   rows: all cells / land (lsm ≥ 0.9) / ocean (lsm ≤ 0.1)
+#   columns: R14 baseline (c·CAPE·P, c fitted on training years), U-Net raw, U-Net calibrated
+#   filled contours = number of grid cells; white = no cells; 1:1 line with R² in the legend
+# ============================================================
+print("Fig 4: Jones-style climatology comparison...", flush=True)
+FIG4_CMAP  = 'turbo'     # Jones-like rainbow look. 'viridis' is safer for colour-blind readers and print.
+FIG4_UNITS = 'density'   # 'density' = strokes km⁻² day⁻¹ (comparable to Jones) | 'cell' = strokes per cell per 12 h
+FIG4_BINS  = 40          # histogram bins per axis (log10 space)
+PREP_PATH  = os.path.join(DATA_DIR, 'jones_israel_12h_OND.nc')   # 12-hourly cache written by train_unet.py
+
+def _attr_years(name):
+    import json as _j, ast as _a
+    try:
+        v = ds_pred.attrs[name]
+        try:
+            return [int(y) for y in _j.loads(v)]
+        except Exception:
+            return [int(y) for y in _a.literal_eval(v)]
+    except Exception:
+        return None
+
+# unit conversion: mean strokes per cell per 12 h → strokes km⁻² day⁻¹
+if FIG4_UNITS == 'density':
+    _R = 6371.0
+    _dlat, _dlon = abs(float(np.diff(lats).mean())), abs(float(np.diff(lons).mean()))
+    cell_km2 = (_R * np.deg2rad(_dlat)) * (_R * np.deg2rad(_dlon) * np.cos(np.deg2rad(lats)))[:, None] \
+               * np.ones((1, n_lon))
+    to_units = lambda m: m * (24.0 / AGG_HOURS) / cell_km2
+    unit_label = 'strokes km$^{-2}$ day$^{-1}$'
+else:
+    to_units = lambda m: m
+    unit_label = f'strokes per cell per {AGG_HOURS} h'
+
+fig4_models = {}
+lsm2d = None
+try:
+    cache = xr.open_dataset(PREP_PATH).sel(lat=lats, lon=lons, method='nearest')
+    if 'lsm' in cache:
+        lsm2d = (cache['lsm'].isel(time=0) if 'time' in cache['lsm'].dims else cache['lsm']).values
+    if all(v in cache for v in ('cape', 'precipitation', 'ltg')):
+        cyears = pd.DatetimeIndex(cache.time.values).year
+        tr_years = _attr_years('train_years')
+        if tr_years is None:
+            held = sum([_attr_years(k) or [] for k in ('val_years', 'test_years', 'excluded_years')], [])
+            tr_years = [y for y in sorted(set(cyears)) if y not in held]
+        tr = np.where(np.isin(cyears, tr_years))[0]
+        cp = (cache['cape'].clip(min=0) * cache['precipitation'].clip(min=0)).fillna(0)
+        c_r14 = float(cache['ltg'].isel(time=tr).fillna(0).sum()) / max(float(cp.isel(time=tr).sum()), 1e-12)
+        fig4_models['R14 (c·CAPE·P)'] = c_r14 * cp.sel(time=test_times).mean('time').values
+        print(f"  R14 constant fitted on training years {tr_years[0]}–{tr_years[-1]}: c = {c_r14:.3e}", flush=True)
+    else:
+        print("  cache has no cape/precipitation — R14 column skipped", flush=True)
+except Exception as e:
+    print(f"  R14 baseline skipped ({e})", flush=True)
+
+if lsm2d is None and os.path.exists(HOURLY_PATH):
+    try:
+        _l = xr.open_dataset(HOURLY_PATH)['lsm']
+        lsm2d = (_l.isel(time=0) if 'time' in _l.dims else _l).sel(lat=lats, lon=lons, method='nearest').values
+    except Exception:
+        pass
+
+if PRED_VAR == 'pred_count' and 'pred_count_raw' in ds_pred:
+    fig4_models['U-Net (raw)'] = np.nan_to_num(ds_pred['pred_count_raw'].values).mean(0)
+    fig4_models['U-Net (calibrated)'] = pred_mean_2d
+else:
+    fig4_models[f'U-Net ({PRED_VAR})'] = pred_mean_2d
+
+rows4 = [('', np.ones((n_lat, n_lon), bool))]
+if lsm2d is not None:
+    rows4 += [('Land', lsm2d >= 0.9), ('Ocean', lsm2d <= 0.1)]
+else:
+    print("  no land-sea mask found — only the 'all cells' row is drawn", flush=True)
+
+obs_u = to_units(obs_mean_2d)
+mod_u = {k: to_units(v) for k, v in fig4_models.items()}
+
+# common axis limits and histogram bins for every panel (so panels are directly comparable)
+_allpos = np.concatenate([a[a > 0].ravel() for a in [obs_u] + list(mod_u.values())])
+_hi = 10 ** np.ceil(np.log10(_allpos.max()))
+_lo = max(10 ** np.floor(np.log10(np.percentile(_allpos, 0.5))), _hi / 1e7)
+edges = np.linspace(np.log10(_lo), np.log10(_hi), FIG4_BINS + 1)
+centres = 10 ** ((edges[:-1] + edges[1:]) / 2)
+
+panels, hmax = {}, 1
+for rname, rmask in rows4:
+    for mname, m in mod_u.items():
+        x, y = obs_u[rmask].ravel(), m[rmask].ravel()
+        ok = np.isfinite(x) & np.isfinite(y)
+        pos = ok & (x > 0) & (y > 0)
+        H, _, _ = np.histogram2d(np.log10(x[pos]), np.log10(y[pos]), bins=[edges, edges])
+        r2 = r2_score(x[ok], y[ok]) if ok.sum() > 2 else np.nan
+        r2l = r2_score(np.log10(x[pos]), np.log10(y[pos])) if pos.sum() > 2 else np.nan
+        panels[(rname, mname)] = (H.T, r2, r2l, int(ok.sum() - pos.sum()))
+        hmax = max(hmax, H.max())
+levels = [l for l in [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000] if l <= hmax * 1.01]
+levels = levels + [levels[-1] * 2] if len(levels) > 1 else [1, 2]
+norm4 = mcolors.LogNorm(vmin=1, vmax=levels[-1])
+
+ncol4, nrow4 = len(mod_u), len(rows4)
+fig, axs = plt.subplots(nrow4, ncol4, figsize=(4.4 * ncol4, 4.2 * nrow4), squeeze=False)
+for i, (rname, _) in enumerate(rows4):
+    for j, mname in enumerate(mod_u):
+        ax = axs[i, j]
+        H, r2, r2l, n_zero = panels[(rname, mname)]
+        cf = ax.contourf(centres, centres, np.ma.masked_less(H, 1), levels=levels, norm=norm4,
+                         cmap=FIG4_CMAP, extend='max')
+        ax.plot([_lo, _hi], [_lo, _hi], 'k-', lw=1,
+                label=f'1:1 line (R² = {r2:.2f}; log R² = {r2l:.2f})')
+        ax.set_xscale('log'); ax.set_yscale('log')
+        ax.set_xlim(_lo, _hi); ax.set_ylim(_lo, _hi); ax.set_aspect('equal')
+        ax.legend(loc='upper left', fontsize=7.5, handlelength=1.5)
+        ax.set_title(f'{mname}: {rname}' if rname else mname, fontsize=11)
+        if i == nrow4 - 1:
+            ax.set_xlabel(f'Observed lightning ({unit_label})', fontsize=9)
+        if j == 0:
+            ax.set_ylabel(f'Modelled lightning ({unit_label})', fontsize=9)
+        cax = make_axes_locatable(ax).append_axes('right', size='5%', pad=0.06)
+        cb = fig.colorbar(cf, cax=cax)
+        cb.ax.tick_params(labelsize=7)
+        if n_zero:
+            print(f"  {mname} {rname or 'all'}: {n_zero} cells with zero observed or modelled mean "
+                  f"left out of the log-log density (still in R²)", flush=True)
+fig.suptitle(f'Test-period mean lightning per grid cell, modelled vs observed — Test {TEST_LABEL}, '
+             f'{"–".join(pd.Timestamp(2001, m, 1).strftime("%b") for m in (min(months_arr), max(months_arr)))}'
+             f'   (colours: number of grid cells)', fontsize=12, y=1.0)
+fig.tight_layout()
+fig.savefig(os.path.join(FIG_DIR, 'fig4_r2_scatter.png'), dpi=150, bbox_inches='tight')
+plt.close(fig)
+print("  Saved fig4_r2_scatter.png", flush=True)
+
+
+# ============================================================
+# Fig 4b — Observed vs predicted (log scales), the earlier two-panel version
+#   (a) per-cell mean over the test period
 #   (b) every pixel × 12-h window, log1p space, density hexbin
 # ============================================================
-print("Fig 4: Obs vs pred scatter...", flush=True)
+print("Fig 4b: Obs vs pred scatter...", flush=True)
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5.2), constrained_layout=True)
 
 xc, yc = obs_mean_2d.ravel(), pred_mean_2d.ravel()
@@ -373,9 +509,9 @@ ax2.legend(loc='upper left')
 plt.colorbar(hb2, ax=ax2, label='log10(# pixel-windows)')
 
 fig.suptitle(f'Observed vs Predicted Lightning — Test {TEST_LABEL}', fontsize=12)
-fig.savefig(os.path.join(FIG_DIR, 'fig4_r2_scatter.png'), dpi=150, bbox_inches='tight')
+fig.savefig(os.path.join(FIG_DIR, 'fig4b_pixel_scatter.png'), dpi=150, bbox_inches='tight')
 plt.close(fig)
-print("  Saved fig4_r2_scatter.png", flush=True)
+print("  Saved fig4b_pixel_scatter.png", flush=True)
 
 
 # ============================================================
