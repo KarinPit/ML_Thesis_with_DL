@@ -21,6 +21,7 @@ import numpy as np
 import os
 import sys
 import json
+import hashlib
 import datetime
 import random
 import math
@@ -283,7 +284,7 @@ optimizer = optim.Adam(model.parameters(), lr=LR)
 
 # ── 5. Training ────────────────────────────────────────────────────────────────
 def train(model, train_inputs, train_targets, val_inputs, val_targets):
-    best_val_loss, patience_counter = float('inf'), 0
+    best_val_loss, patience_counter, best_epoch = float('inf'), 0, 0
     for epoch in range(EPOCHS):
         model.train()
         perm = torch.randperm(len(train_inputs))
@@ -308,24 +309,34 @@ def train(model, train_inputs, train_targets, val_inputs, val_targets):
         print(f'Epoch {epoch+1}/{EPOCHS}, Train loss: {tr_loss:.4f}, Val loss: {va_loss:.4f}', flush=True)
 
         if va_loss < best_val_loss:
-            best_val_loss, patience_counter = va_loss, 0
+            best_val_loss, patience_counter, best_epoch = va_loss, 0, epoch + 1
             torch.save(model.state_dict(), CKPT_PATH)
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
                 print(f"Early stopping at epoch {epoch+1}", flush=True)
                 break
+    return {'best_epoch': best_epoch, 'epochs_run': epoch + 1, 'best_val_loss': round(best_val_loss, 6)}
 
 # The checkpoint gets a small JSON "passport" with the years and inputs it was trained on, so a
 # checkpoint can never silently be reused with a different split (e.g. one that saw today's test years).
 TRAIN_YEARS = sorted(set(years[idx_train].tolist()))
 CKPT_META_PATH = CKPT_PATH + '.json'
+try:
+    import inspect
+    _model_md5 = hashlib.md5(inspect.getsource(SimpleCNN).encode()).hexdigest()[:8]
+except (OSError, TypeError):
+    _model_md5 = 'unknown'
 run_meta = {'train_years': TRAIN_YEARS, 'val_years': list(VAL_YEARS), 'test_years': list(TEST_YEARS),
             'excluded_years': list(EXCLUDE_YEARS), 'features': list(feature_name), 'loss': LOSS,
-            'log_features': list(LOG_FEATURES), 'agg_hours': AGG_HOURS, 'months': list(ACTIVE_MONTHS)}
+            'log_features': list(LOG_FEATURES), 'agg_hours': AGG_HOURS, 'months': list(ACTIVE_MONTHS),
+            'hyperparams': {'seed': SEED, 'batch_size': BATCH_SIZE, 'max_epochs': EPOCHS, 'patience': PATIENCE,
+                            'lr': LR, 'grad_clip': GRAD_CLIP},
+            'model': {'name': type(model).__name__, 'source_md5': _model_md5,
+                      'n_params': sum(p.numel() for p in model.parameters())}}
 
 if RETRAIN or not os.path.exists(CKPT_PATH):
-    train(model, tr_X_tensor, tr_y_tensor, val_X_tensor, val_y_tensor)
+    run_meta['training'] = train(model, tr_X_tensor, tr_y_tensor, val_X_tensor, val_y_tensor)
     run_meta['trained_at'] = datetime.datetime.now().isoformat(timespec='seconds')
     with open(CKPT_META_PATH, 'w') as f:
         json.dump(run_meta, f, indent=1)
@@ -344,6 +355,12 @@ else:
         sys.exit(f"Refusing to reuse {CKPT_PATH}: settings changed since it was trained ({changed}). "
                  f"Set RETRAIN = True.")
     run_meta['trained_at'] = saved_meta.get('trained_at')
+    # the reused model was trained with the settings in its passport, not necessarily today's
+    for k in ('hyperparams', 'model', 'training'):
+        run_meta[k] = saved_meta.get(k, 'unknown (checkpoint made by an older version)')
+    _saved_md5 = saved_meta['model'].get('source_md5') if isinstance(saved_meta.get('model'), dict) else 'unknown'
+    if 'unknown' not in (_saved_md5, _model_md5) and _saved_md5 != _model_md5:
+        sys.exit(f"Refusing to reuse {CKPT_PATH}: the SimpleCNN code changed since it was trained. Set RETRAIN = True.")
     print(f"RETRAIN=False → reusing checkpoint trained {run_meta['trained_at']} on {TRAIN_YEARS}", flush=True)
 
 # ── 6. Predictions in stroke counts ────────────────────────────────────────────
@@ -417,7 +434,13 @@ ds_out = xr.Dataset(data_vars, attrs={
     'log_target': int(LOG_TARGET), 'val_years': str(VAL_YEARS), 'test_years': str(TEST_YEARS),
     'excluded_years': str(EXCLUDE_YEARS),
     'train_years': json.dumps(TRAIN_YEARS), 'features': json.dumps(list(feature_name)),
-    'ckpt_trained_at': str(run_meta.get('trained_at'))})
+    'ckpt_trained_at': str(run_meta.get('trained_at')),
+    # full configuration, so the figure scripts can label the run and keep different set-ups apart
+    'run_name': RUN_NAME, 'log_features': json.dumps(list(LOG_FEATURES)), 'months': json.dumps(ACTIVE_MONTHS),
+    'domain': json.dumps([LAT_MIN, LAT_MAX, LON_MIN, LON_MAX]), 'wcd_min': WCD_MIN,
+    'fss_threshold': FSS_THRESHOLD, 'fss_window': FSS_WINDOW,
+    'hyperparams': json.dumps(run_meta['hyperparams']), 'model': json.dumps(run_meta['model']),
+    'training': json.dumps(run_meta.get('training'))})
 ds_out.to_netcdf(OUT_PATH)
 print(f"Saved → {OUT_PATH}", flush=True)
 

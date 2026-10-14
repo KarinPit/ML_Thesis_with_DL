@@ -1,30 +1,32 @@
 """
 jones_figures.py
 ----------------
-Evaluation figures for the Israel-domain U-Net (OND season; window length read from the predictions file).
-
-Reads the output of train_unet.py (pred_count [+ pred_count_raw] + obs_count, strokes per window).
-Works for any window length (AGG_HOURS) and loss: pass the predictions file on the command line.
+Evaluation figures for the Israel-domain U-Net (OND season). Works for every loss (Poisson, MSE with
+either un-normalisation, log1p-MSE) and every window length: all settings (window, loss, calibration,
+inputs, years, event threshold, hyper-parameters) are read from the predictions file that
+train_unet.py writes, so the figures always describe the run that made them.
 
 Figures produced:
   Fig 1 — Monthly mean maps: Observed vs Predicted (Oct / Nov / Dec)
   Fig 2 — Monthly FSS bar chart by window size (Oct / Nov / Dec)
-  Fig 3 — Metrics summary table
+  Fig 3 — Metrics + configuration table
   Fig 4 — Jones-style: test-period mean lightning per cell, modelled vs observed
            (FIG4_COMPARE = True adds land/ocean rows and R14 / raw / calibrated columns)
-  Fig 4b — Observed vs predicted for every pixel × 12-h window
-  Fig 5 — Pearson & Spearman correlation of each ERA5 variable vs 12-h lightning (TRAINING years,
+  Fig 4b — Observed vs predicted for every pixel × window
+  Fig 5 — Pearson & Spearman correlation of each ERA5 variable vs lightning (TRAINING years,
            so it can be used to choose inputs without looking at the test set)
-  Fig 6 — Case studies: the most active 12-h windows in the test set
+  Fig 6 — Case studies: the most active windows in the test set
 
-Usage (on EC2):
-    cd /home/ec2-user/ML_Thesis_with_DL
-    python jones_figures.py                                                  # poisson, calibrated
-    python jones_figures.py unet_12h_poisson_OND_predictions.nc pred_count_raw
-    python jones_figures.py unet_12h_log_mse_OND_predictions.nc
-    python jones_figures.py unet_6h_mse_OND_predictions.nc                   # other window / loss
+Usage (on EC2, from the repo folder):
+    python jones_figures.py                     # the run currently set in train_unet.py (LOSS, AGG_HOURS …)
+    python jones_figures.py unet_12h_mse_OND_predictions.nc               # a specific run
+    python jones_figures.py unet_12h_mse_OND_predictions.nc pred_count_raw   # its uncalibrated output
+    python jones_figures.py --all               # every predictions file in the data folder
 
-Outputs saved to:  figures/<run name>/
+Outputs: figures/unet_<window>_<loss>_<cal|raw>_<config id>/   e.g. figures/unet_12h_mse_jonesnorm_cal_3f9a2c/
+  A different configuration (loss, window, inputs, years, hyper-parameters, calibration …) always gets
+  a different folder; re-running the same configuration overwrites its folder. Each folder also holds
+  run_summary.json (full configuration + all metrics) for comparing runs later.
 """
 
 import xarray as xr
@@ -44,23 +46,36 @@ from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import precision_score, recall_score, f1_score, r2_score
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-import sys
+import sys, json, glob, subprocess, datetime
+from run_info import default_pred_file, run_config, config_id, run_folder, run_label, short_name, _load
+
 DATA_DIR    = '/home/ec2-user/ML_Thesis_with_DL/data'
-# Usage: python jones_figures.py [predictions_file] [pred_variable]
-#   e.g. python jones_figures.py unet_12h_poisson_OND_predictions.nc pred_count_raw
-PRED_FILE   = sys.argv[1] if len(sys.argv) > 1 else 'unet_12h_poisson_OND_predictions.nc'
-PRED_VAR    = sys.argv[2] if len(sys.argv) > 2 else 'pred_count'      # 'pred_count' or 'pred_count_raw'
-PRED_PATH   = PRED_FILE if os.path.isabs(PRED_FILE) else os.path.join(DATA_DIR, PRED_FILE)
-RUN_NAME    = os.path.basename(PRED_PATH).replace('_OND_predictions.nc', '').replace('.nc', '') \
-              + ('' if PRED_VAR == 'pred_count' else f'_{PRED_VAR}')
-FIG_DIR     = os.path.join('/home/ec2-user/ML_Thesis_with_DL/figures', RUN_NAME)   # one folder per run
+FIG_ROOT    = '/home/ec2-user/ML_Thesis_with_DL/figures'
 HOURLY_PATH = os.path.join(DATA_DIR, 'jones_israel_all_years.nc')         # only needed for Fig 5
-os.makedirs(FIG_DIR, exist_ok=True)
+
+_args = [a for a in sys.argv[1:] if not a.startswith('--')]
+if '--all' in sys.argv:          # one run of this script per predictions file
+    files = sorted(glob.glob(os.path.join(DATA_DIR, 'unet_*_predictions.nc')))
+    print(f"--all: {len(files)} predictions files in {DATA_DIR}", flush=True)
+    # an optional variable name still applies:  python jones_figures.py --all pred_count_raw
+    failed = [f for f in files
+              if subprocess.run([sys.executable, os.path.abspath(__file__), f] + _args[:1]).returncode != 0]
+    sys.exit(f"Failed: {failed}" if failed else 0)
+
+# Usage: python jones_figures.py [predictions_file] [pred_variable]
+PRED_FILE = _args[0] if _args else default_pred_file()       # default: the run set in train_unet.py
+if PRED_FILE is None:
+    sys.exit("No predictions file given and train_unet.py not found next to this script.")
+PRED_VAR  = _args[1] if len(_args) > 1 else 'pred_count'      # 'pred_count' or 'pred_count_raw'
+PRED_PATH = PRED_FILE if os.path.isabs(PRED_FILE) else os.path.join(DATA_DIR, PRED_FILE)
+if not os.path.exists(PRED_PATH):
+    sys.exit(f"{PRED_PATH} not found — run train_unet.py with these settings first "
+             f"(or pass a predictions file: python jones_figures.py <file>)")
 
 # ── Settings ─────────────────────────────────────────────────────────────────
 AGG_HOURS       = 12         # default only — replaced by the window length stored in the predictions file
-EVENT_THRESHOLD = 1.0        # a pixel "has lightning" if ≥ 1 stroke in the window (obs AND pred)
-WINDOW_SIZE     = 3
+EVENT_THRESHOLD = 1.0        # default only — replaced by the run's FSS_THRESHOLD (strokes per window)
+WINDOW_SIZE     = 3          # default only — replaced by the run's FSS_WINDOW
 WINDOW_SIZES    = [1, 3, 5]
 SMOOTH_SIGMA    = 0.0        # extra Gaussian smoothing on Fig 1 maps (0 = show the real fields)
 MAP_COLOR_SCALE = 'linear'   # 'linear' or 'log' for Fig 1
@@ -68,12 +83,37 @@ N_CASES         = 4          # number of case-study windows in Fig 6
 OND_MONTHS      = [10, 11, 12]
 OND_LABELS      = ['October', 'November', 'December']
 
-# ── Load predictions + observations (both strokes per 12 h) ─────────────────
+# ── Load predictions + observations (both strokes per window) ───────────────
 print("Loading predictions...", flush=True)
 ds_pred    = xr.open_dataset(PRED_PATH)
-AGG_HOURS  = int(ds_pred.attrs.get('agg_hours', AGG_HOURS))
+if PRED_VAR not in ds_pred:
+    sys.exit(f"{PRED_VAR!r} is not in {PRED_PATH} (has: {list(ds_pred.data_vars)})")
+A               = {k: _load(v) for k, v in ds_pred.attrs.items()}      # the run's configuration
+AGG_HOURS       = int(A.get('agg_hours', AGG_HOURS))
+EVENT_THRESHOLD = float(A.get('fss_threshold', EVENT_THRESHOLD))
+WINDOW_SIZE     = int(A.get('fss_window', WINDOW_SIZE))
+WINDOW_SIZES    = sorted(set(WINDOW_SIZES) | {WINDOW_SIZE})
 count_da   = ds_pred[PRED_VAR]
-print(f"  file: {PRED_PATH}\n  variable: {PRED_VAR}  →  figures in {FIG_DIR}", flush=True)
+
+RUN_CFG   = run_config(ds_pred.attrs, PRED_VAR)
+RUN_ID    = config_id(RUN_CFG)
+RUN_NAME  = run_folder(ds_pred.attrs, PRED_PATH, PRED_VAR)        # e.g. unet_12h_mse_jonesnorm_cal_3f9a2c
+RUN_LABEL = run_label(ds_pred.attrs, PRED_VAR)                     # e.g. U-Net · MSE, jones un-norm. · 12 h · calibrated
+FIG_DIR   = os.path.join(FIG_ROOT, RUN_NAME)                       # one folder per configuration
+os.makedirs(FIG_DIR, exist_ok=True)
+print(f"  file: {PRED_PATH}\n  variable: {PRED_VAR}\n  run: {RUN_LABEL}  (config {RUN_ID})"
+      f"\n  figures → {FIG_DIR}", flush=True)
+for k, v in RUN_CFG.items():
+    print(f"    {k:16s} {v}", flush=True)
+
+def save(fig, name):
+    """Save with the run name in the corner, so every PNG says which run it belongs to."""
+    fig.text(0.995, -0.01, f"{RUN_NAME}  ·  {os.path.basename(PRED_PATH)}:{PRED_VAR}", ha='right', va='top',
+             fontsize=6.5, color='0.45')
+    fig.savefig(os.path.join(FIG_DIR, name), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Saved {name}", flush=True)
+
 test_times = ds_pred['time'].values
 lats, lons = ds_pred['lat'].values, ds_pred['lon'].values
 n_lat, n_lon = len(lats), len(lons)
@@ -81,14 +121,14 @@ n_lat, n_lon = len(lats), len(lons)
 if 'obs_count' in ds_pred:
     obs_da = ds_pred['obs_count']
 else:
-    # Fallback: build 12-h sums from the hourly file (window starts at each test timestamp)
+    # Fallback: build window sums from the hourly file (window starts at each test timestamp)
     print("  obs_count not in prediction file — summing hourly observations...", flush=True)
     ltg_h = xr.open_dataset(HOURLY_PATH)['ltg'].sel(lat=lats, lon=lons, method='nearest')
     obs_da = xr.concat([ltg_h.sel(time=slice(t, t + np.timedelta64(AGG_HOURS - 1, 'h'))).sum('time')
                         for t in test_times], dim=pd.Index(test_times, name='time'))
 
-count_np = np.nan_to_num(count_da.values.astype(float))   # (T, lat, lon) predicted strokes / 12 h
-obs_np   = np.nan_to_num(obs_da.values.astype(float))     # (T, lat, lon) observed strokes / 12 h
+count_np = np.nan_to_num(count_da.values.astype(float))   # (T, lat, lon) predicted strokes per window
+obs_np   = np.nan_to_num(obs_da.values.astype(float))     # (T, lat, lon) observed strokes per window
 
 obs_binary_np = (obs_np   >= EVENT_THRESHOLD).astype(float)
 pred_np       = (count_np >= EVENT_THRESHOLD).astype(float)
@@ -251,11 +291,9 @@ cbar_ax = fig.add_axes([0.90, 0.05, 0.018, 0.85])
 cb = fig.colorbar(last_im, cax=cbar_ax, extend='max')
 cb.set_label(f'Mean lightning strokes per {AGG_HOURS} h', fontsize=10)
 yrs = pd.DatetimeIndex(test_times).year
-fig.suptitle(f'Monthly Mean Lightning — Observed vs Predicted ({RUN_NAME}) — Test {TEST_LABEL}',
+fig.suptitle(f'Monthly Mean Lightning — Observed vs Predicted ({RUN_LABEL}) — Test {TEST_LABEL}',
              fontsize=13, y=0.97)
-fig.savefig(os.path.join(FIG_DIR, 'fig1_monthly_maps.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
-print("  Saved fig1_monthly_maps.png", flush=True)
+save(fig, 'fig1_monthly_maps.png')
 
 
 # ============================================================
@@ -279,61 +317,88 @@ ax.set_ylim(0, 1)
 ax.axhline(0.5, color='gray', ls=':', lw=1.2, label='FSS = 0.5')
 ax.legend(fontsize=10)
 ax.grid(axis='y', ls='--', alpha=0.4)
-fig.savefig(os.path.join(FIG_DIR, 'fig2_monthly_fss.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
-print("  Saved fig2_monthly_fss.png", flush=True)
+save(fig, 'fig2_monthly_fss.png')
 
 
 # ============================================================
 # Fig 3 — Metrics summary table
 # ============================================================
 print("Fig 3: Metrics table...", flush=True)
-a = ds_pred.attrs
 def fss_mean(w):
     s = fss_by_window[w]; s = s[np.isfinite(s)]
     return np.mean(s) if len(s) else np.nan
 
-row_data = [
-    ['Loss',                    a.get('loss_desc', 'MSE on z-scored log1p(strokes)' if int(a.get('log_target', 1)) else 'MSE (z-scored counts)')],
-    ['Calibration',             a.get('calibration', 'none') if PRED_VAR == 'pred_count' else 'none (raw output)'],
-    ['Time resolution',         f'{AGG_HOURS} h'],
-    ['Validation years',        a.get('val_years', '?')],
-    ['Test years',              a.get('test_years', TEST_LABEL)],
-    ['Excluded years',          a.get('excluded_years', 'none')],
-    ['Event threshold',         f'≥ {EVENT_THRESHOLD:g} stroke / {AGG_HOURS} h'],
+def years_txt(v):
+    """[2013, 2014, …, 2020] → '2013–2020'; gaps → '2022, 2024'."""
+    if not isinstance(v, (list, tuple)) or not v:
+        return str(v) if v not in (None, [], ()) else 'none'
+    v, parts, start = sorted(int(y) for y in v), [], None
+    for i, y in enumerate(v):
+        start = y if start is None else start
+        if i == len(v) - 1 or v[i + 1] != y + 1:
+            parts.append(f'{start}' if start == y else f'{start}–{y}')
+            start = None
+    return ', '.join(parts)
+
+hp, tr, md = (A.get(k) if isinstance(A.get(k), dict) else {} for k in ('hyperparams', 'training', 'model'))
+feats = A.get('features') if isinstance(A.get('features'), list) else []
+logf  = [f for f in (A.get('log_features') or []) if f in feats] if isinstance(A.get('log_features'), list) else []
+config_rows = [
+    ['Run (figure folder)',     RUN_NAME],
+    ['Loss',                    A.get('loss_desc', A.get('loss', '?'))],
+    ['Output shown',            (f"calibrated — {A.get('calibration')}" if RUN_CFG['output'] == 'calibrated'
+                                 else 'raw model output (no calibration)')],
+    ['Window',                  f'{AGG_HOURS} h'],
+    [f'Inputs ({len(feats)})',  ', '.join(short_name(f) for f in feats) or '?'],
+    ['Log-transformed inputs',  ', '.join(short_name(f) for f in logf) or 'none'],
+    ['Train / val / test years', f"{years_txt(A.get('train_years'))} / {years_txt(A.get('val_years'))} / "
+                                 f"{years_txt(A.get('test_years'))}"],
+    ['Excluded years',          years_txt(A.get('excluded_years'))],
+    ['Hyper-parameters',        (f"lr {hp['lr']:g}, batch {hp['batch_size']}, patience {hp['patience']}, "
+                                 f"≤{hp['max_epochs']} epochs, seed {hp['seed']}") if hp else 'not recorded'],
+    ['Training',                (f"best epoch {tr['best_epoch']} of {tr['epochs_run']} "
+                                 f"(val loss {tr['best_val_loss']:.4g})") if tr else 'not recorded'],
+    ['Model',                   (f"{md.get('name', '?')}, {md.get('n_params', 0):,} parameters"
+                                 + (f", trained {A.get('ckpt_trained_at')}" if A.get('ckpt_trained_at') else ''))
+                                if md else (f"trained {A['ckpt_trained_at']}" if A.get('ckpt_trained_at')
+                                            else 'not recorded')],
+    ['Event threshold',         f'≥ {EVENT_THRESHOLD:g} stroke / {AGG_HOURS} h, FSS window {WINDOW_SIZE}×{WINDOW_SIZE}'],
+]
+metric_rows = [
     ['Event rate obs / pred',   f'{obs_binary_np.mean():.3f} / {pred_np.mean():.3f}'],
     ['Precision',               f'{precision:.3f}'],
     ['Recall',                  f'{recall:.3f}'],
     ['F1 score',                f'{f1:.3f}'],
     ['CSI',                     f'{csi:.3f}'],
-    ['Mean FSS (1×1)',          f'{fss_mean(1):.3f}'],
-    ['Mean FSS (3×3)',          f'{fss_mean(3):.3f}'],
-    ['Mean FSS (5×5)',          f'{fss_mean(5):.3f}'],
-    ['Median FSS (3×3)',        f'{np.nanmedian(fss_valid):.3f}'],
-] + [[f'FSS {lbl[:3]} (3×3)', f'{month_fss(m, 3)[0]:.3f}'] for m, lbl in zip(OND_MONTHS, OND_LABELS)] + [
+] + [[f'Mean FSS ({w}×{w})',    f'{fss_mean(w):.3f}'] for w in WINDOW_SIZES] + [
+    [f'Median FSS ({WINDOW_SIZE}×{WINDOW_SIZE})', f'{np.nanmedian(fss_valid):.3f}'],
+] + [[f'FSS {lbl[:3]} ({WINDOW_SIZE}×{WINDOW_SIZE})', f'{month_fss(m, WINDOW_SIZE)[0]:.3f}']
+     for m, lbl in zip(OND_MONTHS, OND_LABELS)] + [
     ['Mean strokes obs / pred', f'{o_all.mean():.3f} / {p_all.mean():.3f}  (bias {bias:+.3f})'],
     ['RMSE (strokes)',          f'{rmse:.3f}'],
     ['R² all pixels (counts)',  f'{r2_all:.3f}'],
     ['R² all pixels (log1p)',   f'{r2_log:.3f}'],
     ['R² per-cell climatology', f'{r2_clim:.3f}  (r = {r_clim:.3f})'],
 ]
+row_data = [['CONFIGURATION', '']] + config_rows + [['TEST-SET METRICS', '']] + metric_rows
+headers = {0, len(config_rows) + 1}
 
-fig, ax = plt.subplots(figsize=(7, 0.3 * len(row_data) + 0.8), constrained_layout=True)
+fig, ax = plt.subplots(figsize=(9, 0.3 * len(row_data) + 0.8), constrained_layout=True)
 ax.axis('off')
-tbl = ax.table(cellText=row_data, colLabels=['Metric', 'Value'], loc='center', cellLoc='left')
+tbl = ax.table(cellText=row_data, loc='center', cellLoc='left', colWidths=[0.3, 0.7])
 tbl.auto_set_font_size(False)
-tbl.set_fontsize(10.5)
-tbl.scale(1.3, 1.5)
-for j in range(2):
-    tbl[0, j].set_facecolor('#2c5f8a')
-    tbl[0, j].set_text_props(color='white', fontweight='bold')
-for i in range(1, len(row_data) + 1):
+tbl.set_fontsize(9.5)
+tbl.scale(1.0, 1.45)
+for i in range(len(row_data)):
     for j in range(2):
-        tbl[i, j].set_facecolor('#f0f4f8' if i % 2 == 0 else 'white')
-ax.set_title(f'U-Net — Test Set Metrics ({RUN_NAME})', fontsize=12, fontweight='bold', pad=10)
-fig.savefig(os.path.join(FIG_DIR, 'fig3_metrics_table.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
-print("  Saved fig3_metrics_table.png", flush=True)
+        c = tbl[i, j]
+        c.PAD = 0.06 if j == 0 else 0.025          # PAD is a fraction of the cell width: keep text near the left edge
+        if i in headers:
+            c.set_facecolor('#2c5f8a'); c.set_text_props(color='white', fontweight='bold')
+        else:
+            c.set_facecolor('#f0f4f8' if i % 2 == 0 else 'white')
+ax.set_title(f'Test Set Metrics — {RUN_LABEL}', fontsize=12, fontweight='bold', pad=10)
+save(fig, 'fig3_metrics_table.png')
 
 
 # ============================================================
@@ -344,7 +409,7 @@ print("  Saved fig3_metrics_table.png", flush=True)
 # ============================================================
 print("Fig 4: Jones-style climatology comparison...", flush=True)
 FIG4_CMAP  = 'turbo'     # Jones-like rainbow look. 'viridis' is safer for colour-blind readers and print.
-FIG4_UNITS = 'density'   # 'density' = strokes km⁻² day⁻¹ (comparable to Jones) | 'cell' = strokes per cell per 12 h
+FIG4_UNITS = 'density'   # 'density' = strokes km⁻² day⁻¹ (comparable to Jones) | 'cell' = strokes per cell per window
 FIG4_BINS  = 40          # histogram bins per axis (log10 space)
 FIG4_COMPARE = False     # False = one panel: the U-Net, modelled vs observed (all cells)
                          # True  = grid: rows all/land/ocean × columns R14 baseline, U-Net raw, U-Net calibrated
@@ -361,7 +426,7 @@ def _attr_years(name):
     except Exception:
         return None
 
-# unit conversion: mean strokes per cell per 12 h → strokes km⁻² day⁻¹
+# unit conversion: mean strokes per cell per window → strokes km⁻² day⁻¹
 if FIG4_UNITS == 'density':
     _R = 6371.0
     _dlat, _dlon = abs(float(np.diff(lats).mean())), abs(float(np.diff(lons).mean()))
@@ -475,19 +540,17 @@ if FIG4_COMPARE:
     fig.suptitle(f'Test-period mean lightning per grid cell, modelled vs observed — Test {TEST_LABEL}, '
                  f'{_season}   (colours: number of grid cells)', fontsize=12, y=1.0)
 else:
-    axs[0, 0].set_title(f'Modelled vs observed lightning — {list(mod_u)[0]}\n'
+    axs[0, 0].set_title(f'Modelled vs observed lightning — {RUN_LABEL}\n'
                         f'mean per grid cell, Test {TEST_LABEL} ({_season})', fontsize=11)
     cb.set_label('number of grid cells', fontsize=8)
 fig.tight_layout()
-fig.savefig(os.path.join(FIG_DIR, 'fig4_r2_scatter.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
-print("  Saved fig4_r2_scatter.png", flush=True)
+save(fig, 'fig4_r2_scatter.png')
 
 
 # ============================================================
 # Fig 4b — Observed vs predicted (log scales), the earlier two-panel version
 #   (a) per-cell mean over the test period
-#   (b) every pixel × 12-h window, log1p space, density hexbin
+#   (b) every pixel × window, log1p space, density hexbin
 # ============================================================
 print("Fig 4b: Obs vs pred scatter...", flush=True)
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5.2), constrained_layout=True)
@@ -526,13 +589,11 @@ ax2.legend(loc='upper left')
 plt.colorbar(hb2, ax=ax2, label='log10(# pixel-windows)')
 
 fig.suptitle(f'Observed vs Predicted Lightning — Test {TEST_LABEL}', fontsize=12)
-fig.savefig(os.path.join(FIG_DIR, 'fig4b_pixel_scatter.png'), dpi=150, bbox_inches='tight')
-plt.close(fig)
-print("  Saved fig4b_pixel_scatter.png", flush=True)
+save(fig, 'fig4b_pixel_scatter.png')
 
 
 # ============================================================
-# Fig 5 — Correlation of ERA5 variables with 12-h lightning (TRAINING years)
+# Fig 5 — Correlation of ERA5 variables with window lightning (TRAINING years)
 # ============================================================
 # Computed on the training years only: ranking inputs on the test years and then choosing inputs from
 # that ranking would leak test information into the model design.
@@ -606,13 +667,11 @@ if corr_results:
     ax.set_ylim(-1, 1)
     ax.legend(fontsize=9)
     ax.grid(axis='y', ls='--', alpha=0.4)
-    fig.savefig(os.path.join(FIG_DIR, 'fig5_correlation.png'), dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    print("  Saved fig5_correlation.png", flush=True)
+    save(fig, 'fig5_correlation.png')
 
 
 # ============================================================
-# Fig 6 — Case studies: most active 12-h windows
+# Fig 6 — Case studies: most active windows
 # ============================================================
 print("Fig 6: Case studies...", flush=True)
 totals   = obs_np.sum(axis=(1, 2))
@@ -638,18 +697,16 @@ if len(case_idx):
     cax6 = fig.add_axes([0.88, 0.05, 0.018, 0.85])
     cb6 = fig.colorbar(im6, cax=cax6, extend='max')
     cb6.set_label(f'Strokes per {AGG_HOURS} h (log scale; white = < {EVENT_THRESHOLD:g})')
-    fig.suptitle(f'Case studies ({RUN_NAME}) — {len(case_idx)} most active {AGG_HOURS}-h windows in the test set',
+    fig.suptitle(f'Case studies ({RUN_LABEL}) — {len(case_idx)} most active {AGG_HOURS}-h windows in the test set',
                  fontsize=12, y=0.98)
-    fig.savefig(os.path.join(FIG_DIR, 'fig6_case_studies.png'), dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    print("  Saved fig6_case_studies.png", flush=True)
+    save(fig, 'fig6_case_studies.png')
 
 
 # ============================================================
 # Summary
 # ============================================================
 print(f"\n{'='*58}")
-print(f"  TEST SET SUMMARY")
+print(f"  TEST SET SUMMARY — {RUN_LABEL}")
 print(f"{'='*58}")
 print(f"  Period          : {pd.Timestamp(test_times[0]).date()} → {pd.Timestamp(test_times[-1]).date()}")
 print(f"  Timesteps       : {len(test_times)} × {AGG_HOURS}h")
@@ -664,4 +721,28 @@ print(f"  Bias (strokes)  : {bias:+.4f}")
 print(f"  R² (clim)       : {r2_clim:.4f}")
 print(f"  R² (log1p, all) : {r2_log:.4f}")
 print(f"{'='*58}")
-print(f"\nFigures saved → {FIG_DIR}", flush=True)
+
+# ── run_summary.json: configuration + metrics, for comparing runs later ──────
+_f = lambda x: None if x is None or not np.isfinite(x) else round(float(x), 4)
+summary = {
+    'run_folder': RUN_NAME, 'label': RUN_LABEL, 'config_id': RUN_ID,
+    'predictions_file': os.path.abspath(PRED_PATH), 'pred_var': PRED_VAR,
+    'ckpt_trained_at': A.get('ckpt_trained_at'), 'training': A.get('training'),
+    'figures_made_at': datetime.datetime.now().isoformat(timespec='seconds'),
+    'config': RUN_CFG,
+    'metrics': {
+        'n_windows': int(len(test_times)),
+        'event_rate_obs': _f(obs_binary_np.mean()), 'event_rate_pred': _f(pred_np.mean()),
+        'precision': _f(precision), 'recall': _f(recall), 'f1': _f(f1), 'csi': _f(csi),
+        **{f'fss_{w}x{w}': _f(fss_mean(w)) for w in WINDOW_SIZES},
+        f'fss_{WINDOW_SIZE}x{WINDOW_SIZE}_median': _f(np.nanmedian(fss_valid)),
+        **{f'fss_{WINDOW_SIZE}x{WINDOW_SIZE}_{lbl[:3].lower()}': _f(month_fss(m, WINDOW_SIZE)[0])
+           for m, lbl in zip(OND_MONTHS, OND_LABELS)},
+        'mean_obs': _f(o_all.mean()), 'mean_pred': _f(p_all.mean()),
+        'mean_ratio': _f(p_all.mean() / max(o_all.mean(), 1e-12)), 'bias': _f(bias), 'rmse': _f(rmse),
+        'r2_all': _f(r2_all), 'r2_log1p': _f(r2_log), 'r2_clim': _f(r2_clim), 'r_clim': _f(r_clim),
+    },
+}
+with open(os.path.join(FIG_DIR, 'run_summary.json'), 'w') as fh:
+    json.dump(summary, fh, indent=1, default=str, ensure_ascii=False)
+print(f"\nFigures + run_summary.json saved → {FIG_DIR}", flush=True)

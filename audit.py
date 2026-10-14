@@ -10,7 +10,7 @@ class) straight from train_unet.py, so it always audits the configuration you ac
 (the loss and window length come from train_unet.py — set LOSS / AGG_HOURS there first)
 
 Nothing is overwritten: checkpoints, caches and prediction files are only read.
-Output: a report with PASS / WARN / FAIL lines, a summary at the end, figures in figures/audit/<run name>/.
+Output: a report with PASS / WARN / FAIL lines, a summary at the end, figures in figures/audit/<run folder>/ (same name as jones_figures.py).
 
 Parts
   A. Data integrity      ranges, completeness, duplicated years/samples, lightning record,
@@ -94,8 +94,13 @@ LOG_TARGET    = (LOSS == 'log_mse')
 PRED_PATH     = args.pred or cfg['OUT_PATH']
 if not os.path.isabs(PRED_PATH) and not os.path.exists(PRED_PATH):
     PRED_PATH = os.path.join(cfg['DATA_DIR'], PRED_PATH)
-if args.fig_dir is None:   # one folder per run, so audits of different windows/losses don't overwrite each other
-    _run = os.path.basename(PRED_PATH).replace('_OND_predictions.nc', '').replace('.nc', '')
+if args.fig_dir is None:   # one folder per configuration (same name as jones_figures.py uses)
+    try:
+        from run_info import run_folder
+        with xr.open_dataset(PRED_PATH) as _p:
+            _run = run_folder(_p.attrs, PRED_PATH)
+    except Exception:          # no predictions yet: fall back to the file name
+        _run = os.path.basename(PRED_PATH).replace('_OND_predictions.nc', '').replace('.nc', '')
     args.fig_dir = os.path.join('figures', 'audit', _run)
 os.makedirs(args.fig_dir, exist_ok=True)
 THR, WIN = cfg.get('FSS_THRESHOLD', 1.0), cfg.get('FSS_WINDOW', 3)

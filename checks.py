@@ -5,10 +5,10 @@ For the biggest test-set lightning events, shows what the ERA5 inputs looked lik
 whether any year (e.g. 2025) has missing / anomalous input data.
 
 Usage:
-    python checks.py                                        # default: poisson predictions
+    python checks.py                                        # the run currently set in train_unet.py
     python checks.py unet_12h_log_mse_OND_predictions.nc
     python checks.py unet_6h_mse_OND_predictions.nc        # any window length / loss
-Outputs: printed tables + figures/<run name>/case_check_inputs.png
+Outputs: printed tables + case_check_inputs.png in the run's figure folder (same folder as jones_figures.py)
 """
 import os, sys, ast, warnings
 import numpy as np
@@ -23,11 +23,11 @@ import matplotlib.colors as mcolors
 
 DATA_DIR  = '/home/ec2-user/ML_Thesis_with_DL/data'
 FIG_DIR   = '/home/ec2-user/ML_Thesis_with_DL/figures'
-PRED_FILE = sys.argv[1] if len(sys.argv) > 1 else 'unet_12h_poisson_OND_predictions.nc'
+from run_info import default_pred_file, run_folder
+PRED_FILE = sys.argv[1] if len(sys.argv) > 1 else default_pred_file()    # default: run set in train_unet.py
 PRED_PATH = PRED_FILE if os.path.isabs(PRED_FILE) else os.path.join(DATA_DIR, PRED_FILE)
-RUN_NAME  = os.path.basename(PRED_PATH).replace('_OND_predictions.nc', '').replace('.nc', '')
-FIG_DIR   = os.path.join(FIG_DIR, RUN_NAME)                 # same folder as jones_figures.py uses
-os.makedirs(FIG_DIR, exist_ok=True)
+if not os.path.exists(PRED_PATH):
+    sys.exit(f"{PRED_PATH} not found — run train_unet.py with these settings first, or pass a file")
 
 SHOW      = ['precipitation', 'total_column_cloud_ice_water', 'cape', 'total_totals_index']   # maps (if present)
 N_CASES   = 4
@@ -35,6 +35,8 @@ STORM_MIN = 10.0      # strokes per window: pixels counted as "inside a storm"
 
 # ── Load ─────────────────────────────────────────────────────────────────────
 pred = xr.open_dataset(PRED_PATH)
+FIG_DIR = os.path.join(FIG_DIR, run_folder(pred.attrs, PRED_PATH))   # same folder as jones_figures.py uses
+os.makedirs(FIG_DIR, exist_ok=True)
 AGG  = int(pred.attrs.get('agg_hours', 12))
 PREP_PATH = os.path.join(DATA_DIR, f'jones_israel_{AGG}h_OND.nc')     # cache written by train_unet.py
 ds   = xr.open_dataset(PREP_PATH).sel(lat=pred.lat, lon=pred.lon).load()
