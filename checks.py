@@ -7,7 +7,8 @@ whether any year (e.g. 2025) has missing / anomalous input data.
 Usage:
     python checks.py                                        # default: poisson predictions
     python checks.py unet_12h_log_mse_OND_predictions.nc
-Outputs: printed tables + figures/case_check_inputs.png
+    python checks.py unet_6h_mse_OND_predictions.nc        # any window length / loss
+Outputs: printed tables + figures/<run name>/case_check_inputs.png
 """
 import os, sys, ast, warnings
 import numpy as np
@@ -22,20 +23,33 @@ import matplotlib.colors as mcolors
 
 DATA_DIR  = '/home/ec2-user/ML_Thesis_with_DL/data'
 FIG_DIR   = '/home/ec2-user/ML_Thesis_with_DL/figures'
-PREP_PATH = os.path.join(DATA_DIR, 'jones_israel_12h_OND.nc')
 PRED_FILE = sys.argv[1] if len(sys.argv) > 1 else 'unet_12h_poisson_OND_predictions.nc'
 PRED_PATH = PRED_FILE if os.path.isabs(PRED_FILE) else os.path.join(DATA_DIR, PRED_FILE)
+RUN_NAME  = os.path.basename(PRED_PATH).replace('_OND_predictions.nc', '').replace('.nc', '')
+FIG_DIR   = os.path.join(FIG_DIR, RUN_NAME)                 # same folder as jones_figures.py uses
 os.makedirs(FIG_DIR, exist_ok=True)
 
-FEATURES  = ['cape', 'precipitation', 'lsm', 'rh', 't2m', 'wcd',
-             'total_totals_index', 'total_column_cloud_ice_water']
-SHOW      = ['precipitation', 'total_column_cloud_ice_water', 'cape', 'total_totals_index']
+SHOW      = ['precipitation', 'total_column_cloud_ice_water', 'cape', 'total_totals_index']   # maps (if present)
 N_CASES   = 4
-STORM_MIN = 10.0      # strokes / 12 h: pixels counted as "inside a storm"
+STORM_MIN = 10.0      # strokes per window: pixels counted as "inside a storm"
 
 # ── Load ─────────────────────────────────────────────────────────────────────
 pred = xr.open_dataset(PRED_PATH)
+AGG  = int(pred.attrs.get('agg_hours', 12))
+PREP_PATH = os.path.join(DATA_DIR, f'jones_israel_{AGG}h_OND.nc')     # cache written by train_unet.py
 ds   = xr.open_dataset(PREP_PATH).sel(lat=pred.lat, lon=pred.lon).load()
+# inputs = the ones this run was trained with (recorded in the predictions file), else whatever the cache holds
+try:
+    import json as _json
+    FEATURES = [v for v in _json.loads(pred.attrs['features']) if v in ds]
+except Exception:
+    FEATURES = [v for v in ds.data_vars if v != 'ltg']
+SHOW = [v for v in SHOW if v in ds] or FEATURES[:4]
+# short, unique column names (cutting names to N letters made the ice and liquid water columns collide)
+SHORT = {'precipitation': 'precip', 'total_totals_index': 'TT', 'total_column_cloud_ice_water': 'tciw',
+         'total_column_cloud_liquid_water': 'tclw', 'k_index': 'K', 'relative_humidity': 'rh'}
+short = lambda v: SHORT.get(v, v if len(v) <= 12 else v[:12])
+assert len({short(v) for v in FEATURES}) == len(FEATURES), 'short column names collide — extend SHORT'
 print(f"Predictions: {PRED_PATH}  (loss={pred.attrs.get('loss', '?')}, "
       f"calibration={pred.attrs.get('calibration', '?')})\n")
 
@@ -64,8 +78,8 @@ for yr in np.unique(years):
     r = {'year': yr}
     for v in FEATURES:
         a = d[v].values
-        r[f'{v[:12]}_nan'] = np.isnan(a).mean()
-        r[f'{v[:12]}_zero'] = (a == 0).mean()
+        r[f'{short(v)}_nan'] = np.isnan(a).mean()
+        r[f'{short(v)}_zero'] = (a == 0).mean()
     rows.append(r)
 t1 = pd.DataFrame(rows).set_index('year')
 with pd.option_context('display.width', 250, 'display.max_columns', 40, 'display.float_format', '{:.3f}'.format):
@@ -75,7 +89,7 @@ with pd.option_context('display.width', 250, 'display.max_columns', 40, 'display
 
 # ── 2. What do inputs look like INSIDE storms, per year? ─────────────────────
 print("\n" + "=" * 100)
-print(f"2. MEAN INPUT VALUE AT STORM PIXELS (obs ≥ {STORM_MIN:g} strokes/12h), per year")
+print(f"2. MEAN INPUT VALUE AT STORM PIXELS (obs ≥ {STORM_MIN:g} strokes/{AGG}h), per year")
 print("   If test years are far below training years, the model never 'sees' those storms.")
 print("=" * 100)
 storm = (ltg >= STORM_MIN)
@@ -85,7 +99,7 @@ for yr in np.unique(years):
     m = storm.sel(time=sel)
     r = {'year': yr, 'n_storm_px': int(m.sum())}
     for v in FEATURES:
-        r[v[:14]] = float(ds[v].sel(time=sel).where(m).mean())
+        r[short(v)] = float(ds[v].sel(time=sel).where(m).mean())
     rows.append(r)
 t2 = pd.DataFrame(rows).set_index('year')
 train = t2.loc[t2.index.isin(TRAIN_YEARS)]

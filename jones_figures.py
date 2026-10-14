@@ -1,9 +1,10 @@
 """
 jones_figures.py
 ----------------
-Evaluation figures for the Israel-domain U-Net (OND season, 12-hourly, log-target MSE model).
+Evaluation figures for the Israel-domain U-Net (OND season; window length read from the predictions file).
 
-Reads the output of unet_12h.py (pred_count [+ pred_count_raw] + obs_count, strokes per 12 h).
+Reads the output of train_unet.py (pred_count [+ pred_count_raw] + obs_count, strokes per window).
+Works for any window length (AGG_HOURS) and loss: pass the predictions file on the command line.
 
 Figures produced:
   Fig 1 — Monthly mean maps: Observed vs Predicted (Oct / Nov / Dec)
@@ -21,6 +22,7 @@ Usage (on EC2):
     python jones_figures.py                                                  # poisson, calibrated
     python jones_figures.py unet_12h_poisson_OND_predictions.nc pred_count_raw
     python jones_figures.py unet_12h_log_mse_OND_predictions.nc
+    python jones_figures.py unet_6h_mse_OND_predictions.nc                   # other window / loss
 
 Outputs saved to:  figures/<run name>/
 """
@@ -56,8 +58,8 @@ HOURLY_PATH = os.path.join(DATA_DIR, 'jones_israel_all_years.nc')         # only
 os.makedirs(FIG_DIR, exist_ok=True)
 
 # ── Settings ─────────────────────────────────────────────────────────────────
-AGG_HOURS       = 12
-EVENT_THRESHOLD = 1.0        # a pixel "has lightning" if ≥ 1 stroke in the 12-h window (obs AND pred)
+AGG_HOURS       = 12         # default only — replaced by the window length stored in the predictions file
+EVENT_THRESHOLD = 1.0        # a pixel "has lightning" if ≥ 1 stroke in the window (obs AND pred)
 WINDOW_SIZE     = 3
 WINDOW_SIZES    = [1, 3, 5]
 SMOOTH_SIGMA    = 0.0        # extra Gaussian smoothing on Fig 1 maps (0 = show the real fields)
@@ -69,6 +71,7 @@ OND_LABELS      = ['October', 'November', 'December']
 # ── Load predictions + observations (both strokes per 12 h) ─────────────────
 print("Loading predictions...", flush=True)
 ds_pred    = xr.open_dataset(PRED_PATH)
+AGG_HOURS  = int(ds_pred.attrs.get('agg_hours', AGG_HOURS))
 count_da   = ds_pred[PRED_VAR]
 print(f"  file: {PRED_PATH}\n  variable: {PRED_VAR}  →  figures in {FIG_DIR}", flush=True)
 test_times = ds_pred['time'].values
@@ -345,7 +348,7 @@ FIG4_UNITS = 'density'   # 'density' = strokes km⁻² day⁻¹ (comparable to J
 FIG4_BINS  = 40          # histogram bins per axis (log10 space)
 FIG4_COMPARE = False     # False = one panel: the U-Net, modelled vs observed (all cells)
                          # True  = grid: rows all/land/ocean × columns R14 baseline, U-Net raw, U-Net calibrated
-PREP_PATH  = os.path.join(DATA_DIR, 'jones_israel_12h_OND.nc')   # 12-hourly cache written by train_unet.py
+PREP_PATH  = os.path.join(DATA_DIR, f'jones_israel_{AGG_HOURS}h_OND.nc')   # aggregated cache written by train_unet.py
 
 def _attr_years(name):
     import json as _j, ast as _a

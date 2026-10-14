@@ -1,13 +1,17 @@
 """
-train_unet.py — 12-hourly lightning U-Net with an intensity-preserving loss.
+train_unet.py — lightning U-Net on AGG_HOURS-hour windows (default 12 h).
 
-Two loss options (same data, model and split, so they compare cleanly):
+Three loss options (same data, model and split, so they compare cleanly as an ablation):
 
   LOSS = 'poisson'  (recommended)  model predicts log(expected strokes); Poisson loss on raw counts.
                     The prediction is the MEAN number of strokes, so monthly means match observations.
-  LOSS = 'log_mse'                 the previous run: MSE on z-scored log1p(strokes). Predicts a
-                    "typical" value, which is far below the mean for rare, bursty lightning → intensity
-                    is underestimated (you saw ~6.5× too low).
+  LOSS = 'mse'                     Jones et al.: MSE on z-scored stroke counts. MSE_UNNORM chooses how
+                    predictions are turned back into strokes ('direct' or Jones's 'jones' re-standardisation).
+  LOSS = 'log_mse'                 MSE on z-scored log1p(strokes). Predicts a "typical" value, which is
+                    far below the mean for rare, bursty lightning → intensity is underestimated.
+
+AGG_HOURS  any whole number of hours (e.g. 3, 6, 12, 24, 48). Each window length gets its own cached
+           data file, checkpoint and predictions file, so runs never overwrite each other.
 
 CALIBRATE = True  additionally applies quantile mapping fitted on the VALIDATION year, so the
                   distribution of predicted intensities matches the observed one (test is never used).
@@ -30,22 +34,27 @@ import torch.nn as nn
 import torch.optim as optim
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-LOSS      = 'poisson'          # 'poisson' or 'log_mse'
+LOSS      = 'poisson'          # 'poisson' | 'mse' (Jones et al.) | 'log_mse'
+MSE_UNNORM = 'direct'          # LOSS='mse' only: 'direct' = invert the z-score with the training mean/std
+                               # 'jones'  = Jones et al.: re-standardise the predictions with their own
+                               #            mean/std first, then give them the training mean/std.
+                               # Only post-processing changes: set RETRAIN = False to reuse the MSE model.
+AGG_HOURS = 12                 # window length in hours: any whole number (3, 6, 12, 24, 48 …)
 CALIBRATE = True               # quantile-map predictions to the observed distribution (fit on val year)
 RETRAIN   = True               # False = reuse the saved checkpoint (e.g. after fixing test-year data only).
                                # Refused if the checkpoint was trained on different years/inputs (no leakage).
 
 DATA_DIR   = '/home/ec2-user/ML_Thesis_with_DL/data'
 DATA_PATH  = f'{DATA_DIR}/jones_israel_all_years.nc'            # hourly source file
-PREP_PATH  = f'{DATA_DIR}/jones_israel_12h_OND.nc'              # cached 12-hourly file (built once)
-CKPT_PATH  = f'{DATA_DIR}/unet_12h_{LOSS}_best.pt'
-OUT_PATH   = f'{DATA_DIR}/unet_12h_{LOSS}_OND_predictions.nc'
+PREP_PATH  = f'{DATA_DIR}/jones_israel_{AGG_HOURS}h_OND.nc'      # cached aggregated file (one per window length)
+RUN_NAME   = f'{AGG_HOURS}h_{LOSS}' + ('_jonesnorm' if LOSS == 'mse' and MSE_UNNORM == 'jones' else '')
+CKPT_PATH  = f'{DATA_DIR}/unet_{AGG_HOURS}h_{LOSS}_best.pt'        # same model for both MSE un-normalisations
+OUT_PATH   = f'{DATA_DIR}/unet_{RUN_NAME}_OND_predictions.nc'
 
 LAT_MIN, LAT_MAX = 30.0, 43.0
 LON_MIN, LON_MAX = 10.0, 39.0
 
 ACTIVE_MONTHS = [10, 11, 12]
-AGG_HOURS     = 12
 
 # Years left out completely (not used for training, validation or testing):
 #   2025 — precipitation is all zeros in the source file (IMERG data gap). After re-downloading
@@ -56,30 +65,43 @@ VAL_YEARS     = [2021]
 TEST_YEARS    = [2022, 2024]
 # everything else (2013–2020) is training
 
-feature_name = ['cape', 'precipitation', 'lsm', 'rh', 't2m', 'wcd',
-                'total_totals_index', 'total_column_cloud_ice_water']
+feature_name = ['precipitation', 'total_totals_index', 'ciwc500',
+                'total_column_cloud_ice_water', 'cape', 'k_index',
+                'total_column_cloud_liquid_water', 'lsm']
 output_name  = ['ltg']
 
-LOG_FEATURES = ['cape', 'precipitation', 'total_column_cloud_ice_water']
-LOG_TARGET   = (LOSS == 'log_mse')     # Poisson works on raw counts
+LOG_FEATURES = ['cape', 'precipitation', 'total_column_cloud_ice_water',
+                'ciwc500', 'total_column_cloud_liquid_water']
+LOG_TARGET   = (LOSS == 'log_mse')     # 'poisson' and 'mse' work on raw counts
 WCD_MIN      = -2000.0
 
 SEED       = 13
-BATCH_SIZE = 16
+BATCH_SIZE = 16                        # short windows (1–6 h) give many more samples: 32–64 trains faster
 EPOCHS     = 100
 PATIENCE   = 10
 LR         = 1e-3
 GRAD_CLIP  = 1.0                       # protects against the occasional huge storm count
 
-FSS_THRESHOLD = 1.0
+FSS_THRESHOLD = 1.0                    # strokes per window
 FSS_WINDOW    = 3
 
+if LOSS not in ('poisson', 'mse', 'log_mse'):
+    sys.exit(f"LOSS must be 'poisson', 'mse' or 'log_mse' (got {LOSS!r})")
+if MSE_UNNORM not in ('direct', 'jones'):
+    sys.exit(f"MSE_UNNORM must be 'direct' or 'jones' (got {MSE_UNNORM!r})")
+if not (isinstance(AGG_HOURS, int) and AGG_HOURS >= 1):
+    sys.exit(f"AGG_HOURS must be a whole number of hours ≥ 1 (got {AGG_HOURS!r})")
+if 24 % AGG_HOURS and AGG_HOURS % 24:
+    print(f"NOTE: {AGG_HOURS} h does not divide a day evenly, so windows start at different times of day "
+          f"(the diurnal cycle is mixed across windows).", flush=True)
+
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f"Using device: {DEVICE} | LOSS={LOSS} | CALIBRATE={CALIBRATE}", flush=True)
+print(f"Using device: {DEVICE} | LOSS={LOSS}" + (f" ({MSE_UNNORM} un-normalisation)" if LOSS == 'mse' else '')
+      + f" | window {AGG_HOURS} h | CALIBRATE={CALIBRATE}", flush=True)
 random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
 
 
-# ── 1. 12-hourly dataset (cached; rebuilt automatically when settings or source data change) ──
+# ── 1. Aggregated dataset (cached; rebuilt automatically when settings or source data change) ──
 CACHE_KEY = {
     'agg_hours': AGG_HOURS,
     'months':    ACTIVE_MONTHS,
@@ -336,13 +358,17 @@ def predict_raw(X_tensor):
     return torch.cat(parts, dim=0).numpy().squeeze(1)
 
 def to_counts(raw, ref_da):
-    """Model output → expected strokes per 12 h."""
+    """Model output → expected strokes per window."""
     if LOSS == 'poisson':
         return np.exp(np.clip(raw, -20, 12))
     da = xr.DataArray(raw, dims=['time', 'lat', 'lon'],
                       coords={'time': ref_da.time.values, 'lat': ref_da.lat.values, 'lon': ref_da.lon.values})
-    t = (da.groupby('time.month') * train_y_std['ltg']).groupby('time.month') + train_y_mean['ltg']
-    return np.expm1(t.clip(min=0)).values
+    if LOSS == 'mse' and MSE_UNNORM == 'jones':
+        # Jones et al.: standardise the predictions by their own mean/std over this whole set,
+        # then give them the training mean/std of each month
+        da = (da - da.mean()) / da.std()
+    t = ((da.groupby('time.month') * train_y_std['ltg']).groupby('time.month') + train_y_mean['ltg']).clip(min=0)
+    return (np.expm1(t) if LOG_TARGET else t).values
 
 pred_val_raw  = to_counts(predict_raw(val_X_tensor),  obs_counts_val)
 pred_test_raw = to_counts(predict_raw(test_X_tensor), obs_counts_test)
@@ -369,6 +395,7 @@ dims   = ['time', 'lat', 'lon']
 coords = {'time': obs_counts_test.time.values, 'lat': obs_counts_test.lat.values,
           'lon': obs_counts_test.lon.values}
 loss_desc = {'poisson': 'Poisson NLL on raw strokes (predicts mean)',
+             'mse':     f'MSE on z-scored strokes (Jones et al.; {MSE_UNNORM} un-normalisation)',
              'log_mse': 'MSE on z-scored log1p(strokes)'}[LOSS]
 calib_desc = f'quantile mapping fitted on {VAL_YEARS}' if CALIBRATE else 'none'
 
@@ -386,6 +413,7 @@ if LOSS == 'poisson':
                                           attrs={'description': 'P(at least 1 stroke) = 1 - exp(-rate)'})
 ds_out = xr.Dataset(data_vars, attrs={
     'agg_hours': AGG_HOURS, 'loss': LOSS, 'loss_desc': loss_desc, 'calibration': calib_desc,
+    'mse_unnorm': MSE_UNNORM if LOSS == 'mse' else 'n/a',
     'log_target': int(LOG_TARGET), 'val_years': str(VAL_YEARS), 'test_years': str(TEST_YEARS),
     'excluded_years': str(EXCLUDE_YEARS),
     'train_years': json.dumps(TRAIN_YEARS), 'features': json.dumps(list(feature_name)),

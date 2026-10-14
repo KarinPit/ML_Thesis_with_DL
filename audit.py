@@ -7,9 +7,10 @@ class) straight from train_unet.py, so it always audits the configuration you ac
     python audit.py                 # everything, incl. control experiments (trains a few small models)
     python audit.py --quick         # data + leakage checks + baselines only (no training)
     python audit.py --pred unet_12h_poisson_top7_OND_predictions.nc   # audit a different run
+(the loss and window length come from train_unet.py — set LOSS / AGG_HOURS there first)
 
 Nothing is overwritten: checkpoints, caches and prediction files are only read.
-Output: a report with PASS / WARN / FAIL lines, a summary at the end, figures in figures/audit/.
+Output: a report with PASS / WARN / FAIL lines, a summary at the end, figures in figures/audit/<run name>/.
 
 Parts
   A. Data integrity      ranges, completeness, duplicated years/samples, lightning record,
@@ -74,7 +75,7 @@ parser.add_argument('--config', default='train_unet.py', help='training script t
 parser.add_argument('--seeds', type=int, default=3, help='number of seeds for the real-model repeat (default 3)')
 parser.add_argument('--max-epochs', type=int, default=60, help='epoch cap for control trainings (default 60)')
 parser.add_argument('--shift-days', type=int, default=7, help='time shift for the shifted-input control')
-parser.add_argument('--fig-dir', default='figures/audit')
+parser.add_argument('--fig-dir', default=None, help='default: figures/audit/<run name>')
 args = parser.parse_args()
 
 cfg = read_train_config(args.config)
@@ -93,6 +94,9 @@ LOG_TARGET    = (LOSS == 'log_mse')
 PRED_PATH     = args.pred or cfg['OUT_PATH']
 if not os.path.isabs(PRED_PATH) and not os.path.exists(PRED_PATH):
     PRED_PATH = os.path.join(cfg['DATA_DIR'], PRED_PATH)
+if args.fig_dir is None:   # one folder per run, so audits of different windows/losses don't overwrite each other
+    _run = os.path.basename(PRED_PATH).replace('_OND_predictions.nc', '').replace('.nc', '')
+    args.fig_dir = os.path.join('figures', 'audit', _run)
 os.makedirs(args.fig_dir, exist_ok=True)
 THR, WIN = cfg.get('FSS_THRESHOLD', 1.0), cfg.get('FSS_WINDOW', 3)
 
@@ -170,7 +174,7 @@ def calibrate(pred_val, obs_val, pred_test):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Load the 12-hourly data exactly as train_unet.py does
+# Load the aggregated data exactly as train_unet.py does
 # ════════════════════════════════════════════════════════════════════════════════
 print(f"Auditing settings from {args.config}: LOSS={LOSS}, features={FEATURES}")
 print(f"  val {cfg['VAL_YEARS']}  test {cfg['TEST_YEARS']}  excluded {EXCLUDE_YEARS}")
@@ -204,7 +208,7 @@ else:
 missing_vars = [v for v in FEATURES + [TARGET] if v not in ds]
 if missing_vars:
     print(f"\n  STOP: {cfg['PREP_PATH']} has no {missing_vars}.\n"
-          f"  The cached 12-hour file was built with different inputs than {args.config} now lists\n"
+          f"  The cached {cfg['AGG_HOURS']}-hour file was built with different inputs than {args.config} now lists\n"
           f"  (cache: {cache_vars or list(ds.data_vars)}).\n"
           f"  Run 'python {args.config}' first with the inputs you want — it rebuilds the cache and\n"
           f"  retrains — then run the audit again.")
@@ -220,7 +224,7 @@ for c in ('lat', 'lon'):
     d = np.diff(ds[c].values)
     report('PASS' if np.allclose(d, d[0], atol=1e-4) else 'FAIL', f"{c} spacing regular ({d.min():.4f}…{d.max():.4f})")
 
-section("A2. Physical ranges (12-hour values the model sees)")
+section(f"A2. Physical ranges ({cfg['AGG_HOURS']}-hour values the model sees)")
 RANGES = {'cape': (0, 20000), 'precipitation': (0, 200), 'lsm': (0, 1), 'rh': (0, 100), 't2m': (220, 330),
           'total_totals_index': (-60, 80), 'k_index': (-80, 70), 'total_column_cloud_ice_water': (0, 20),
           'total_column_cloud_liquid_water': (0, 20), 'ciwc500': (0, 0.01), 'ciwc1000': (0, 0.01),
@@ -241,7 +245,7 @@ if 'lsm' in ds:
     lsm_var = float(ds['lsm'].std('time').max())
     report('PASS' if lsm_var < 1e-4 else 'WARN', f"land-sea mask constant in time (max std {lsm_var:.2e})")
 
-section("A3. Completeness per year (12-hour windows; zero-everywhere fields = missing data)")
+section(f"A3. Completeness per year ({cfg['AGG_HOURS']}-hour windows; zero-everywhere fields = missing data)")
 expected_per_year = sum(pd.Period(f'2001-{m:02d}').days_in_month for m in cfg['ACTIVE_MONTHS']) * 24 // cfg['AGG_HOURS']
 rows = []
 for y in sorted(set(years)):
@@ -304,7 +308,7 @@ lr['split'] = [comp.loc[y, 'split'] for y in lr.index]
 print(lr.to_string(float_format=lambda x: f'{x:.4f}'))
 used = lr[lr.split != 'excluded']
 slope = np.polyfit(used.index, used['mean'], 1)[0] / used['mean'].mean() * 100
-info(f"trend in mean strokes per 12 h: {slope:+.1f}% per year")
+info(f"trend in mean strokes per {cfg['AGG_HOURS']} h: {slope:+.1f}% per year")
 ratio = lr.loc[lr.split == 'test', 'mean'].mean() / lr.loc[lr.split == 'train', 'mean'].mean()
 report('PASS' if 0.67 < ratio < 1.5 else 'WARN',
        f"test-years / train-years mean lightning = {ratio:.2f}"
@@ -493,7 +497,7 @@ if 'cape' in ds and 'precipitation' in ds:
     c = ltg[idx_train].sum() / max(cp[idx_train].sum(), 1e-12)
     rows['R14 c·CAPE·P (raw)'] = metrics(obs_test, c * cp[idx_test])
     rows['R14 c·CAPE·P (calibrated)'] = metrics(obs_test, calibrate(c * cp[idx_val], obs_val, c * cp[idx_test]))
-rows['persistence: previous 12 h'] = metrics(obs_test[ok_p], np.nan_to_num(pers_test[ok_p]))
+rows[f"persistence: previous {cfg['AGG_HOURS']} h"] = metrics(obs_test[ok_p], np.nan_to_num(pers_test[ok_p]))
 if pred is not None and not set(ds.time.values[idx_test]) <= set(pred.time.values):
     report('WARN', 'prediction file does not cover the current test windows (made with another split) — '
                    'U-Net rows skipped; rerun train_unet.py')
@@ -504,7 +508,7 @@ if pred is not None:
         rows['U-Net (raw)'] = metrics(obs_test, pt['pred_count_raw'].values)
     rows['U-Net (as saved)'] = metrics(obs_test, pt['pred_count'].values)
 print_table(rows)
-info("persistence uses observed lightning 12 h earlier, which the U-Net does NOT get; it shows how much "
+info(f"persistence uses observed lightning {cfg['AGG_HOURS']} h earlier, which the U-Net does NOT get; it shows how much "
      "of the score is just 'storms last'. Calibrated rows are fair comparisons with the calibrated U-Net.")
 
 if pred is not None:
@@ -576,10 +580,10 @@ else:
     def to_counts(raw, idx):
         if LOSS == 'poisson':
             return np.exp(np.clip(raw, -20, 12))
-        m = mon[idx][:, None, None]
         mu = np.array([float(ym[TARGET].sel(month=k)) for k in mon[idx]])[:, None, None]
         sd = np.array([float(ysd[TARGET].sel(month=k)) for k in mon[idx]])[:, None, None]
-        return np.expm1(np.clip(raw * sd + mu, 0, None))
+        t = np.clip(raw * sd + mu, 0, None)            # 'mse': strokes; 'log_mse': log1p(strokes)
+        return np.expm1(t) if LOG_TARGET else t
 
     Xtr, Xva, Xte = X_of(idx_train), X_of(idx_val), X_of(idx_test)
     ytr, yva = y_of(idx_train), y_of(idx_val)
@@ -660,19 +664,27 @@ else:
            f"shuffled-target model FSS {ctrl['shuffled targets']['FSS mean']:.3f} ≤ climatology {clim_fss:.3f} + 0.05 "
            "(if not, the model gets lightning information from somewhere other than the inputs)")
 
-    # shifted inputs: each target paired with inputs from N days earlier (same split, same season)
-    shift = np.timedelta64(args.shift_days, 'D')
+    # shifted inputs: each target paired with inputs from ~N days earlier (same split, same season).
+    # The shift is rounded to a whole number of windows, so it lands on a window start for any AGG_HOURS.
+    n_shift = max(1, round(args.shift_days * 24 / cfg['AGG_HOURS']))
+    shift = np.timedelta64(n_shift * cfg['AGG_HOURS'], 'h')
+    sh_lbl = f"inputs {n_shift * cfg['AGG_HOURS'] / 24:g} days earlier"
     def shifted(idx):
         src = [t_index.get(ds.time.values[i] - shift) for i in idx]
-        keep_ = np.array([k is not None and split_of[k] == split_of[i] for k, i in zip(src, idx)])
-        return np.array([k for k, ok in zip(src, keep_) if ok]), np.asarray(idx)[keep_]
+        keep_ = np.array([k is not None and split_of[k] == split_of[i] for k, i in zip(src, idx)], dtype=bool)
+        return (np.array([k for k, ok in zip(src, keep_) if ok], dtype=int),
+                np.asarray(idx, dtype=int)[keep_])
     s_tr, t_tr = shifted(idx_train); s_va, t_va = shifted(idx_val); s_te, t_te = shifted(idx_test)
-    sh_model = train_model(cfg['SEED'], X_of(s_tr), y_of(t_tr), X_of(s_va), y_of(t_va))
-    ctrl[f'inputs {args.shift_days} days earlier'], _, _ = evaluate(sh_model, X_of(s_va), X_of(s_te), t_va, t_te, ltg[t_te])
-    sh_fss, real_fss = ctrl[f'inputs {args.shift_days} days earlier']['FSS mean'], fss_seeds.mean()
-    report('PASS' if sh_fss < real_fss - 0.1 else 'WARN',
-           f"with inputs from {args.shift_days} days earlier FSS drops {real_fss:.3f} → {sh_fss:.3f} "
-           "(a large drop means the model reads the actual weather, not just the season/geography)")
+    if min(len(s_tr), len(s_va), len(s_te)) == 0:
+        report('WARN', f"shifted-input control skipped: no windows {sh_lbl[7:]} inside the same season "
+                       f"(try a smaller --shift-days)")
+    else:
+        sh_model = train_model(cfg['SEED'], X_of(s_tr), y_of(t_tr), X_of(s_va), y_of(t_va))
+        ctrl[sh_lbl], _, _ = evaluate(sh_model, X_of(s_va), X_of(s_te), t_va, t_te, ltg[t_te])
+        sh_fss, real_fss = ctrl[sh_lbl]['FSS mean'], fss_seeds.mean()
+        report('PASS' if sh_fss < real_fss - 0.1 else 'WARN',
+               f"with {sh_lbl} FSS drops {real_fss:.3f} → {sh_fss:.3f} "
+               "(a large drop means the model reads the actual weather, not just the season/geography)")
 
     print()
     print_table(ctrl | {'climatology (calibrated)': rows['climatology (calibrated)']})
