@@ -1,0 +1,210 @@
+{
+ "run_folder": "unet_12h_poisson_cal_6124ab",
+ "label": "U-Net · Poisson · 12 h · calibrated",
+ "predictions": [
+  "/home/ec2-user/ML_Thesis_with_DL/data/unet_12h_poisson_OND_predictions.nc",
+  "/home/ec2-user/ML_Thesis_with_DL/data/unet_12h_poisson_OND_predictions_extra.nc"
+ ],
+ "settings": {
+  "box": [
+   30.0,
+   34.5,
+   32.0,
+   36.5
+  ],
+  "ildn_types": "all",
+  "ildn_min_ka": 0.0,
+  "ildn_time_offset_h": 0,
+  "active_min": 1,
+  "years": [
+   2023,
+   2024
+  ],
+  "agg_hours": 12,
+  "fss_window": 3,
+  "ildn_files": [
+   "/home/ec2-user/ML_Thesis_with_DL/data/2023_for_yoav_including_cloud.txt",
+   "/home/ec2-user/ML_Thesis_with_DL/data/2024_for_yoav_including_cloud.txt",
+   "/home/ec2-user/ML_Thesis_with_DL/data/2025_for_yoav_including_cloud.txt"
+  ]
+ },
+ "time_check": {
+  "lags_h": [
+   -6,
+   -5,
+   -4,
+   -3,
+   -2,
+   -1,
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "corr": [
+   0.604,
+   0.636,
+   0.669,
+   0.706,
+   0.745,
+   0.786,
+   0.819,
+   0.791,
+   0.758,
+   0.725,
+   0.694,
+   0.667,
+   0.638
+  ],
+  "best_lag_h": 0
+ },
+ "scores": {
+  "2023": {
+   "U-Net": {
+    "windows": 184,
+    "active_windows": 86,
+    "spearman_box_total": 0.7462,
+    "auc_active_window": 0.7384,
+    "fss_freq_matched": 0.2731,
+    "fss_ge1": 0.2725,
+    "map_spearman": 0.4177,
+    "ratio_to_ildn": 0.1815
+   },
+   "WWLLN": {
+    "windows": 184,
+    "active_windows": 86,
+    "spearman_box_total": 0.7775,
+    "auc_active_window": 0.8237,
+    "fss_freq_matched": 0.4637,
+    "fss_ge1": 0.4637,
+    "map_spearman": 0.5747,
+    "ratio_to_ildn": 0.2858
+   },
+   "R14 (CAPE×P)": {
+    "windows": 184,
+    "active_windows": 86,
+    "spearman_box_total": 0.7606,
+    "auc_active_window": 0.8938,
+    "fss_freq_matched": 0.2949,
+    "fss_ge1": 0.2861,
+    "map_spearman": 0.5934,
+    "ratio_to_ildn": 0.2133
+   },
+   "Climatology": {
+    "windows": 184,
+    "active_windows": 86,
+    "spearman_box_total": -0.125,
+    "auc_active_window": 0.3971,
+    "fss_freq_matched": 0.0456,
+    "fss_ge1": 0.1112,
+    "map_spearman": 0.1369,
+    "ratio_to_ildn": 0.5048
+   },
+   "_ildn": {
+    "strokes_in_box": 184475,
+    "windows": 184,
+    "active_windows": 86,
+    "cell_event_rate": 0.0541
+   }
+  },
+  "2024": {
+   "U-Net": {
+    "windows": 184,
+    "active_windows": 95,
+    "spearman_box_total": 0.8176,
+    "auc_active_window": 0.7947,
+    "fss_freq_matched": 0.2915,
+    "fss_ge1": 0.2915,
+    "map_spearman": 0.6161,
+    "ratio_to_ildn": 0.6597
+   },
+   "WWLLN": {
+    "windows": 184,
+    "active_windows": 95,
+    "spearman_box_total": 0.8392,
+    "auc_active_window": 0.831,
+    "fss_freq_matched": 0.4136,
+    "fss_ge1": 0.4136,
+    "map_spearman": 0.6685,
+    "ratio_to_ildn": 0.5808
+   },
+   "R14 (CAPE×P)": {
+    "windows": 184,
+    "active_windows": 95,
+    "spearman_box_total": 0.7002,
+    "auc_active_window": 0.8099,
+    "fss_freq_matched": 0.257,
+    "fss_ge1": 0.2585,
+    "map_spearman": 0.6355,
+    "ratio_to_ildn": 0.3338
+   },
+   "Climatology": {
+    "windows": 184,
+    "active_windows": 95,
+    "spearman_box_total": 0.2945,
+    "auc_active_window": 0.6318,
+    "fss_freq_matched": 0.0908,
+    "fss_ge1": 0.1307,
+    "map_spearman": 0.5666,
+    "ratio_to_ildn": 0.6395
+   },
+   "_ildn": {
+    "strokes_in_box": 145617,
+    "windows": 184,
+    "active_windows": 95,
+    "cell_event_rate": 0.0478
+   }
+  },
+  "all": {
+   "U-Net": {
+    "windows": 368,
+    "active_windows": 181,
+    "spearman_box_total": 0.7759,
+    "auc_active_window": 0.768,
+    "fss_freq_matched": 0.2827,
+    "fss_ge1": 0.2825,
+    "map_spearman": 0.3615,
+    "ratio_to_ildn": 0.3925
+   },
+   "WWLLN": {
+    "windows": 368,
+    "active_windows": 181,
+    "spearman_box_total": 0.8032,
+    "auc_active_window": 0.8272,
+    "fss_freq_matched": 0.437,
+    "fss_ge1": 0.437,
+    "map_spearman": 0.4904,
+    "ratio_to_ildn": 0.4159
+   },
+   "R14 (CAPE×P)": {
+    "windows": 368,
+    "active_windows": 181,
+    "spearman_box_total": 0.73,
+    "auc_active_window": 0.852,
+    "fss_freq_matched": 0.2756,
+    "fss_ge1": 0.2716,
+    "map_spearman": 0.4538,
+    "ratio_to_ildn": 0.2665
+   },
+   "Climatology": {
+    "windows": 368,
+    "active_windows": 181,
+    "spearman_box_total": 0.0776,
+    "auc_active_window": 0.5146,
+    "fss_freq_matched": 0.0725,
+    "fss_ge1": 0.121,
+    "map_spearman": 0.3091,
+    "ratio_to_ildn": 0.5642
+   },
+   "_ildn": {
+    "strokes_in_box": 330092,
+    "windows": 368,
+    "active_windows": 181,
+    "cell_event_rate": 0.051
+   }
+  }
+ }
+}

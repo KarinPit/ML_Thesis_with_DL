@@ -1,0 +1,99 @@
+{
+ "run_folder": "unet_12h_mse_jonesnorm_raw_866fb6",
+ "label": "U-Net · MSE, Jones un-norm. · 12 h · raw",
+ "config_id": "866fb6",
+ "predictions_file": "/home/ec2-user/ML_Thesis_with_DL/data/unet_12h_mse_jonesnorm_OND_predictions.nc",
+ "pred_var": "pred_count",
+ "ckpt_trained_at": "2026-10-14T18:42:52",
+ "training": {
+  "best_epoch": 23,
+  "epochs_run": 33,
+  "best_val_loss": 0.775297
+ },
+ "figures_made_at": "2026-10-14T18:52:56",
+ "config": {
+  "agg_hours": 12,
+  "loss": "mse",
+  "mse_unnorm": "jones",
+  "output": "raw",
+  "calibration": "none",
+  "features": [
+   "cape",
+   "lsm",
+   "precipitation",
+   "rh",
+   "shear",
+   "t2m",
+   "wcd"
+  ],
+  "log_features": [],
+  "train_years": [
+   2013,
+   2014,
+   2015,
+   2016,
+   2017,
+   2018,
+   2019,
+   2020
+  ],
+  "val_years": [
+   2021
+  ],
+  "test_years": [
+   2022,
+   2024
+  ],
+  "excluded_years": [
+   2023,
+   2025
+  ],
+  "months": [
+   10,
+   11,
+   12
+  ],
+  "domain": [
+   30.0,
+   43.0,
+   10.0,
+   39.0
+  ],
+  "wcd_min": -2000.0,
+  "hyperparams": {
+   "seed": 13,
+   "batch_size": 16,
+   "max_epochs": 50,
+   "patience": 10,
+   "lr": 0.001,
+   "grad_clip": 1.0
+  },
+  "model_code": "01e5a8f8",
+  "event_threshold": 1.0
+ },
+ "metrics": {
+  "n_windows": 368,
+  "event_rate_obs": 0.0443,
+  "event_rate_pred": 0.0986,
+  "precision": 0.3492,
+  "recall": 0.7765,
+  "f1": 0.4818,
+  "csi": 0.3174,
+  "fss_1x1": 0.3629,
+  "fss_3x3": 0.4466,
+  "fss_5x5": 0.4804,
+  "fss_3x3_median": 0.5239,
+  "fss_3x3_oct": 0.334,
+  "fss_3x3_nov": 0.5407,
+  "fss_3x3_dec": 0.4683,
+  "mean_obs": 1.3221,
+  "mean_pred": 2.2203,
+  "mean_ratio": 1.6794,
+  "bias": 0.8982,
+  "rmse": 17.8048,
+  "r2_all": -0.0431,
+  "r2_log1p": -0.268,
+  "r2_clim": -0.0211,
+  "r_clim": 0.8417
+ }
+}

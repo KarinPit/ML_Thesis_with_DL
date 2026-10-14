@@ -1,0 +1,106 @@
+{
+ "run_folder": "unet_12h_mse_jonesnorm_cal_112405",
+ "label": "U-Net · MSE, Jones un-norm. · 12 h · calibrated",
+ "config_id": "112405",
+ "predictions_file": "/home/ec2-user/ML_Thesis_with_DL/data/unet_12h_mse_jonesnorm_OND_predictions.nc",
+ "pred_var": "pred_count",
+ "ckpt_trained_at": "2026-10-14T19:13:23",
+ "training": {
+  "best_epoch": 18,
+  "epochs_run": 28,
+  "best_val_loss": 0.787955
+ },
+ "figures_made_at": "2026-10-14T19:14:55",
+ "config": {
+  "agg_hours": 12,
+  "loss": "mse",
+  "mse_unnorm": "jones",
+  "output": "calibrated",
+  "calibration": "quantile mapping fitted on [2021]",
+  "features": [
+   "cape",
+   "ciwc500",
+   "k_index",
+   "lsm",
+   "precipitation",
+   "total_column_cloud_ice_water",
+   "total_column_cloud_liquid_water",
+   "total_totals_index"
+  ],
+  "log_features": [
+   "cape",
+   "ciwc500",
+   "precipitation",
+   "total_column_cloud_ice_water",
+   "total_column_cloud_liquid_water"
+  ],
+  "train_years": [
+   2013,
+   2014,
+   2015,
+   2016,
+   2017,
+   2018,
+   2019,
+   2020
+  ],
+  "val_years": [
+   2021
+  ],
+  "test_years": [
+   2022,
+   2024
+  ],
+  "excluded_years": [
+   2023,
+   2025
+  ],
+  "months": [
+   10,
+   11,
+   12
+  ],
+  "domain": [
+   30.0,
+   43.0,
+   10.0,
+   39.0
+  ],
+  "wcd_min": -2000.0,
+  "hyperparams": {
+   "seed": 13,
+   "batch_size": 16,
+   "max_epochs": 50,
+   "patience": 10,
+   "lr": 0.001,
+   "grad_clip": 1.0
+  },
+  "model_code": "01e5a8f8",
+  "event_threshold": 1.0
+ },
+ "metrics": {
+  "n_windows": 368,
+  "event_rate_obs": 0.0443,
+  "event_rate_pred": 0.0457,
+  "precision": 0.587,
+  "recall": 0.6056,
+  "f1": 0.5962,
+  "csi": 0.4247,
+  "fss_1x1": 0.4403,
+  "fss_3x3": 0.5595,
+  "fss_5x5": 0.5999,
+  "fss_3x3_median": 0.6957,
+  "fss_3x3_oct": 0.4603,
+  "fss_3x3_nov": 0.6257,
+  "fss_3x3_dec": 0.5919,
+  "mean_obs": 1.3221,
+  "mean_pred": 1.5493,
+  "mean_ratio": 1.1718,
+  "bias": 0.2272,
+  "rmse": 19.6328,
+  "r2_all": -0.2683,
+  "r2_log1p": 0.3033,
+  "r2_clim": 0.3755,
+  "r_clim": 0.8082
+ }
+}
