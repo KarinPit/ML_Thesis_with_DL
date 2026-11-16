@@ -6,9 +6,9 @@ Run on EC2 from the repo folder, after train_unet.py has written its predictions
     python thesis_figures.py                      # everything whose inputs exist
     python thesis_figures.py --only F4 F5 T3      # some items only
     python thesis_figures.py --list               # every item and whether its inputs exist
-    python thesis_figures.py --train-log train_log.txt --audit-log audit_log.txt
-        train_log.txt : the printed output of train_unet.py   (python train_unet.py | tee train_log.txt)
+    python thesis_figures.py --audit-log audit_log.txt
         audit_log.txt : the printed output of audit.py         (python audit.py | tee audit_log.txt)
+        --train-log train_log.txt only for models trained before the loss history was saved
 
 Outputs (folder figures/thesis/):
     F01_…pdf / .png     main figures            (PDF for LaTeX, PNG for a quick look)
@@ -31,7 +31,16 @@ Conventions used in every figure
     year) for every skill score; for maps of the mean, CAPE × P uses its fitted constant only
   • no titles inside figures and no run-id footers — the caption says what a figure shows
 
-Inputs for figures that need extra runs (names to use when those runs are made):
+Inputs for figures that need extra runs — train_unet.py makes them with command-line options and names
+the files itself (the settings in train_unet.py stay at the main run):
+  F13 storm history:   python train_unet.py --lags 3                 (+ --seed 14, --seed 15 for more seeds)
+                       python train_unet.py --lags 3 --lag-control   (control: same inputs, no storm history)
+                       python train_unet.py --seed 14 / --seed 15    (more seeds of the normal model)
+  O2  learning curve:  python train_unet.py --train-years 2 / 4 / 6
+  A4  training curves: read from the predictions file (models trained with the current train_unet.py),
+                       otherwise from --train-log
+  A5  robustness:      python audit.py | tee audit_log.txt   →   --audit-log audit_log.txt
+File names and patterns:
   F3  ablation:        ABLATION below. Each step reads its own predictions file if it exists; otherwise
                        it falls back to the FSS stored in figures/_old/<run folder>/run_summary.json
                        (shown as open markers, without a confidence interval).
@@ -110,7 +119,7 @@ PERCELL_FILE = 'percell_poisson_OND_predictions.nc'                 # O1
 LEARNING_CURVE_FILES = {2: 'unet_12h_poisson_train2y_OND_predictions.nc',
                         4: 'unet_12h_poisson_train4y_OND_predictions.nc',
                         6: 'unet_12h_poisson_train6y_OND_predictions.nc',
-                        8: '{main}'}                                 # O2
+                        'all': '{main}'}                             # O2 ('all' = every training year)
 
 NICE = {'precipitation': 'Precipitation (IMERG)', 'total_totals_index': 'Total Totals index',
         'ciwc500': 'Cloud ice at 500 hPa', 'total_column_cloud_ice_water': 'Total column cloud ice',
@@ -328,6 +337,12 @@ class Data:
         self.cfg = read_train_config(args.train_script)
         self.data_dir = args.data_dir or self.cfg.get('DATA_DIR') or os.path.join(HERE, 'data')
         rel = lambda p: os.path.join(self.data_dir, os.path.basename(p)) if p else None
+        tag = self.cfg.get('RUN_TAG') or ''
+        if tag:      # a variant (--lags, --seed …) set in the file itself: figures are still about the main run
+            print(f"NOTE: train_unet.py has RUN_TAG '{tag}' — using the main run's files (without '{tag}')", flush=True)
+            for k in ('OUT_PATH', 'CKPT_PATH'):
+                if self.cfg.get(k):
+                    self.cfg[k] = self.cfg[k].replace(tag + '_OND', '_OND').replace(tag + '_best', '_best')
         self.pred_path = args.pred if args.pred and os.path.isabs(args.pred) else (
             os.path.join(self.data_dir, args.pred) if args.pred else rel(self.cfg.get('OUT_PATH')))
         self.prep_path = rel(self.cfg.get('PREP_PATH'))
@@ -1489,8 +1504,19 @@ def A3_all_pixels(D):
 
 
 def A4_training(D):
+    D.pred()
+    hist = D.A.get('training', {}).get('history') if isinstance(D.A.get('training'), dict) else None
+    if hist:
+        ep, trl, val = (list(x) for x in zip(*hist))
+    else:
+        ep, trl, val = _loss_from_log(D)
+    _plot_training(D, ep, trl, val)
+
+
+def _loss_from_log(D):
     if not D.args.train_log or not os.path.exists(D.args.train_log):
-        raise Missing('--train-log (save it with: python train_unet.py | tee train_log.txt)')
+        raise Missing('the loss of every epoch: retrain the main model with the current train_unet.py '
+                      '(python train_unet.py --retrain), or pass --train-log with its printed output')
     rx = re.compile(r'Epoch (\d+)/\d+, Train loss: ([-0-9.eE+]+), Val loss: ([-0-9.eE+]+)')
     ep, trl, val = [], [], []
     for line in open(D.args.train_log):
@@ -1502,6 +1528,10 @@ def A4_training(D):
     if len(set(ep)) < len(ep):        # several trainings in one log: keep the last
         start = max(i for i, e in enumerate(ep) if e == 1)
         ep, trl, val = ep[start:], trl[start:], val[start:]
+    return ep, trl, val
+
+
+def _plot_training(D, ep, trl, val):
     best = ep[int(np.argmin(val))]
     fig, ax = plt.subplots(figsize=(W1, 2.3))
     ax.plot(ep, trl, color='0.3', lw=1.2, label='training')
@@ -1509,6 +1539,7 @@ def A4_training(D):
     ax.axvline(best, color='0.5', ls=':', lw=0.8)
     ax.text(best, max(max(trl), max(val)), f' best epoch {best}', fontsize=6.5, va='top')
     ax.set_xlabel('epoch'); ax.set_ylabel('Poisson loss'); ax.legend()
+    ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
     save(fig, 'A4_training_curves', f"Training and validation loss per epoch; the model of the best validation epoch "
                                     f"({best}) is kept (early stopping).")
 
@@ -1582,10 +1613,12 @@ def A7_ildn_time(D):
 def O2_learning_curve(D):
     c = D.core()
     pts = []
-    for n, f in sorted(LEARNING_CURVE_FILES.items()):
+    for n, f in LEARNING_CURVE_FILES.items():
+        n = len(c['tr_years']) if n == 'all' else n
         series = _pred_file_fss(D, D.path(f), 'pred_count', c)
         if series is not None:
             pts.append((n, *mean_ci(series, c['blocks'])))
+    pts.sort()
     if len(pts) < 3:
         raise Missing('at least 3 of LEARNING_CURVE_FILES')
     fig, ax = plt.subplots(figsize=(W1, 2.3))
@@ -1595,7 +1628,8 @@ def O2_learning_curve(D):
         ax.axhline(np.nanmean(fss_series(c['obs'], c['M']['CAPE × P'])), color=COL['CAPE × P'], ls='--', lw=0.9, label='CAPE × P')
         ax.legend()
     ax.set_xlabel('training seasons'); ax.set_ylabel('FSS (3 × 3 cells)'); ax.set_xticks(n)
-    save(fig, 'O2_learning_curve', "FSS on the test years against the number of training seasons (95 % CI).")
+    save(fig, 'O2_learning_curve', "FSS on the test years against the number of training seasons (the most recent "
+                                   "seasons before the validation year; 95 % CI). The dashed line is calibrated CAPE × P.")
 
 
 def O3_receptive_field(D):

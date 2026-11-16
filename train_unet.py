@@ -45,11 +45,47 @@ CALIBRATE = True               # quantile-map predictions to the observed distri
 RETRAIN   = False               # False = reuse the saved checkpoint (e.g. after fixing test-year data only).
                                # Refused if the checkpoint was trained on different years/inputs (no leakage).
 
+# Extra experiments for the thesis figures. Leave these at their defaults in the file and switch them on
+# from the command line instead, e.g.  python train_unet.py --lags 3 --seed 14
+# Each variant writes its own checkpoint and predictions file (name ends in RUN_TAG), so the main run is
+# never overwritten and thesis_figures.py / audit.py / ildn_eval.py keep reading the main run.
+N_LAGS        = 1              # 1 = inputs of the current window only; 3 = also the two previous windows
+                               #     (storm history, Fig. 13). Inputs are stacked oldest → newest.
+LAG_CONTROL   = False          # N_LAGS > 1 only: the earlier slots get inputs of RANDOM other windows (same
+                               #     split) — same number of inputs, no storm history (control run, Fig. 13)
+N_TRAIN_YEARS = None           # None = all training years; N = only the last N training years (learning curve)
+
+SEED       = 13                # random seed (other seeds: --seed 14 …)
+
 DATA_DIR   = '/home/ec2-user/ML_Thesis_with_DL/data'
 DATA_PATH  = f'{DATA_DIR}/jones_israel_all_years.nc'            # hourly source file
 PREP_PATH  = f'{DATA_DIR}/jones_israel_{AGG_HOURS}h_OND.nc'      # cached aggregated file (one per window length)
-RUN_NAME   = f'{AGG_HOURS}h_{LOSS}' + ('_jonesnorm' if LOSS == 'mse' and MSE_UNNORM == 'jones' else '')
-CKPT_PATH  = f'{DATA_DIR}/unet_{AGG_HOURS}h_{LOSS}_best.pt'        # same model for both MSE un-normalisations
+
+# ── command-line overrides (python train_unet.py --help) ──
+import argparse
+_ap = argparse.ArgumentParser(description='Train the lightning U-Net. Without options: the settings in this file.')
+_ap.add_argument('--lags', type=int, help='N_LAGS: number of windows the model sees (3 = storm history, Fig. 13)')
+_ap.add_argument('--lag-control', action='store_true', help='LAG_CONTROL: earlier slots from random other windows')
+_ap.add_argument('--train-years', type=int, help='N_TRAIN_YEARS: train on the last N training years only (learning curve)')
+_ap.add_argument('--seed', type=int, help='SEED: random seed')
+_ap.add_argument('--retrain', action='store_true', help='RETRAIN = True')
+_args, _ = _ap.parse_known_args()
+if _args.lags:
+    N_LAGS = _args.lags
+if _args.lag_control:
+    LAG_CONTROL = True
+if _args.train_years:
+    N_TRAIN_YEARS = _args.train_years
+if _args.seed is not None:
+    SEED = _args.seed
+if _args.retrain:
+    RETRAIN = True
+
+# '' for the main run; e.g. '_lags3', '_lags3ctrl', '_train4y', '_seed14', '_lags3_seed14'
+RUN_TAG    = ((f'_lags{N_LAGS}' if N_LAGS > 1 else '') + ('ctrl' if N_LAGS > 1 and LAG_CONTROL else '')
+              + (f'_train{N_TRAIN_YEARS}y' if N_TRAIN_YEARS else '') + (f'_seed{SEED}' if SEED != 13 else ''))
+RUN_NAME   = f'{AGG_HOURS}h_{LOSS}' + ('_jonesnorm' if LOSS == 'mse' and MSE_UNNORM == 'jones' else '') + RUN_TAG
+CKPT_PATH  = f'{DATA_DIR}/unet_{AGG_HOURS}h_{LOSS}{RUN_TAG}_best.pt'   # same model for both MSE un-normalisations
 OUT_PATH   = f'{DATA_DIR}/unet_{RUN_NAME}_OND_predictions.nc'
 EXTRA_PATH = f'{DATA_DIR}/unet_{RUN_NAME}_OND_predictions_extra.nc'  # predictions for EXTRA_PRED_YEARS
 
@@ -82,7 +118,6 @@ LOG_FEATURES = ['cape', 'precipitation', 'total_column_cloud_ice_water',
 LOG_TARGET   = (LOSS == 'log_mse')     # 'poisson' and 'mse' work on raw counts
 WCD_MIN      = -2000.0
 
-SEED       = 13
 BATCH_SIZE = 16                        # short windows (1–6 h) give many more samples: 32–64 trains faster
 EPOCHS     = 100
 PATIENCE   = 10
@@ -97,6 +132,10 @@ if LOSS not in ('poisson', 'mse', 'log_mse'):
 if not set(EXTRA_PRED_YEARS) <= set(EXCLUDE_YEARS):
     sys.exit(f"EXTRA_PRED_YEARS must be excluded years (never used for training or validation); "
              f"{sorted(set(EXTRA_PRED_YEARS) - set(EXCLUDE_YEARS))} are not in EXCLUDE_YEARS")
+if not (isinstance(N_LAGS, int) and N_LAGS >= 1):
+    sys.exit(f"N_LAGS must be a whole number ≥ 1 (got {N_LAGS!r})")
+if LAG_CONTROL and N_LAGS == 1:
+    sys.exit("LAG_CONTROL needs N_LAGS > 1 (e.g. --lags 3 --lag-control)")
 if MSE_UNNORM not in ('direct', 'jones'):
     sys.exit(f"MSE_UNNORM must be 'direct' or 'jones' (got {MSE_UNNORM!r})")
 if not (isinstance(AGG_HOURS, int) and AGG_HOURS >= 1):
@@ -107,7 +146,8 @@ if 24 % AGG_HOURS and AGG_HOURS % 24:
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Using device: {DEVICE} | LOSS={LOSS}" + (f" ({MSE_UNNORM} un-normalisation)" if LOSS == 'mse' else '')
-      + f" | window {AGG_HOURS} h | CALIBRATE={CALIBRATE}", flush=True)
+      + f" | window {AGG_HOURS} h | CALIBRATE={CALIBRATE}"
+      + (f" | run tag '{RUN_TAG}'" if RUN_TAG else '') + f" | seed {SEED}", flush=True)
 random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
 
 
@@ -204,6 +244,26 @@ keep      = ~np.isin(years, EXCLUDE_YEARS)
 idx_val   = np.where(keep & np.isin(years, VAL_YEARS))[0]
 idx_test  = np.where(keep & np.isin(years, TEST_YEARS))[0]
 idx_train = np.where(keep & ~np.isin(years, VAL_YEARS + TEST_YEARS))[0]
+if N_TRAIN_YEARS:
+    _tr_years = sorted(set(years[idx_train].tolist()))
+    if N_TRAIN_YEARS > len(_tr_years):
+        sys.exit(f"N_TRAIN_YEARS = {N_TRAIN_YEARS}, but there are only {len(_tr_years)} training years")
+    idx_train = idx_train[np.isin(years[idx_train], _tr_years[-N_TRAIN_YEARS:])]   # the most recent N
+
+# N_LAGS > 1: a window is used only if the N_LAGS − 1 windows before it exist (same season, no gap)
+_t_all   = ds.time.values
+_t_index = {t: i for i, t in enumerate(_t_all)}
+_step    = np.timedelta64(AGG_HOURS, 'h')
+def lag_sources(i):
+    """Indices of the windows the model sees for window i, oldest first (None if one is missing)."""
+    src = [_t_index.get(_t_all[i] - k * _step) for k in range(N_LAGS - 1, -1, -1)]
+    return None if any(s is None for s in src) else src
+if N_LAGS > 1:
+    _has_hist = np.array([lag_sources(i) is not None for i in range(len(_t_all))])
+    n_drop = [int((~_has_hist[i]).sum()) for i in (idx_train, idx_val, idx_test)]
+    idx_train, idx_val, idx_test = (i[_has_hist[i]] for i in (idx_train, idx_val, idx_test))
+    print(f"N_LAGS = {N_LAGS}: windows without {N_LAGS - 1} previous windows dropped "
+          f"(train {n_drop[0]}, val {n_drop[1]}, test {n_drop[2]})", flush=True)
 print(f"Excluded years: {EXCLUDE_YEARS}", flush=True)
 print(f"Splits — train: {len(idx_train)} {sorted(set(years[idx_train].tolist()))}, "
       f"val: {len(idx_val)} {VAL_YEARS}, test: {len(idx_test)} {TEST_YEARS}", flush=True)
@@ -239,7 +299,19 @@ def to_tensor(d):
     arr = np.nan_to_num(arr, nan=0.0)
     return torch.tensor(arr, dtype=torch.float32).permute(0, 3, 1, 2)
 
-tr_X_tensor, val_X_tensor, test_X_tensor = (to_tensor(zscore_X(d)) for d in (X_tr, X_va, X_te))
+if N_LAGS == 1:
+    tr_X_tensor, val_X_tensor, test_X_tensor = (to_tensor(zscore_X(d)) for d in (X_tr, X_va, X_te))
+else:
+    Z_all = to_tensor(zscore_X(ds_model[feature_name]))           # every window, (time, feature, lat, lon)
+    _lag_rng = np.random.default_rng(SEED)
+    def stack_lags(idx):
+        """(n, N_LAGS·features, lat, lon): blocks of all features, oldest window first. LAG_CONTROL: the
+        earlier blocks come from random other windows of the same set (no storm history)."""
+        src = np.array([lag_sources(i) for i in idx])
+        if LAG_CONTROL:
+            src[:, :-1] = _lag_rng.choice(idx, size=(len(idx), N_LAGS - 1))
+        return torch.cat([Z_all[src[:, k]] for k in range(N_LAGS)], dim=1)
+    tr_X_tensor, val_X_tensor, test_X_tensor = (stack_lags(i) for i in (idx_train, idx_val, idx_test))
 if LOSS == 'poisson':
     tr_y_tensor, val_y_tensor = to_tensor(y_tr), to_tensor(y_va)          # raw counts
 else:
@@ -276,7 +348,7 @@ class SimpleCNN(nn.Module):
         d0 = self.decoder0(d1)
         return self.outputs(d0)     # poisson: log(expected strokes) | log_mse: z-scored log1p
 
-model = SimpleCNN(len(feature_name), n_lat, n_lon).to(DEVICE)
+model = SimpleCNN(len(feature_name) * N_LAGS, n_lat, n_lon).to(DEVICE)
 
 if LOSS == 'poisson':
     # Start from the domain-mean rate so early training isn't spent learning the overall level
@@ -294,6 +366,7 @@ optimizer = optim.Adam(model.parameters(), lr=LR)
 # ── 5. Training ────────────────────────────────────────────────────────────────
 def train(model, train_inputs, train_targets, val_inputs, val_targets):
     best_val_loss, patience_counter, best_epoch = float('inf'), 0, 0
+    history = []                                   # [epoch, train loss, val loss] — saved with the checkpoint
     for epoch in range(EPOCHS):
         model.train()
         perm = torch.randperm(len(train_inputs))
@@ -316,6 +389,7 @@ def train(model, train_inputs, train_targets, val_inputs, val_targets):
                 va_loss += criterion(model(xb), yb).item() * len(xb); n += len(xb)
         va_loss /= n
         print(f'Epoch {epoch+1}/{EPOCHS}, Train loss: {tr_loss:.4f}, Val loss: {va_loss:.4f}', flush=True)
+        history.append([epoch + 1, round(tr_loss, 6), round(va_loss, 6)])
 
         if va_loss < best_val_loss:
             best_val_loss, patience_counter, best_epoch = va_loss, 0, epoch + 1
@@ -325,7 +399,8 @@ def train(model, train_inputs, train_targets, val_inputs, val_targets):
             if patience_counter >= PATIENCE:
                 print(f"Early stopping at epoch {epoch+1}", flush=True)
                 break
-    return {'best_epoch': best_epoch, 'epochs_run': epoch + 1, 'best_val_loss': round(best_val_loss, 6)}
+    return {'best_epoch': best_epoch, 'epochs_run': epoch + 1, 'best_val_loss': round(best_val_loss, 6),
+            'history': history}
 
 # The checkpoint gets a small JSON "passport" with the years and inputs it was trained on, so a
 # checkpoint can never silently be reused with a different split (e.g. one that saw today's test years).
@@ -339,6 +414,7 @@ except (OSError, TypeError):
 run_meta = {'train_years': TRAIN_YEARS, 'val_years': list(VAL_YEARS), 'test_years': list(TEST_YEARS),
             'excluded_years': list(EXCLUDE_YEARS), 'features': list(feature_name), 'loss': LOSS,
             'log_features': list(LOG_FEATURES), 'agg_hours': AGG_HOURS, 'months': list(ACTIVE_MONTHS),
+            'n_lags': N_LAGS, 'lag_control': bool(LAG_CONTROL),
             'hyperparams': {'seed': SEED, 'batch_size': BATCH_SIZE, 'max_epochs': EPOCHS, 'patience': PATIENCE,
                             'lr': LR, 'grad_clip': GRAD_CLIP},
             'model': {'name': type(model).__name__, 'source_md5': _model_md5,
@@ -360,6 +436,8 @@ else:
                  f"validation/test years (data leakage). Set RETRAIN = True.")
     changed = [k for k in ('train_years', 'features', 'loss', 'log_features', 'agg_hours', 'months')
                if saved_meta.get(k) != run_meta[k]]
+    changed += [k for k, default in (('n_lags', 1), ('lag_control', False))      # older passports: defaults
+                if saved_meta.get(k, default) != run_meta[k]]
     if changed:
         sys.exit(f"Refusing to reuse {CKPT_PATH}: settings changed since it was trained ({changed}). "
                  f"Set RETRAIN = True.")
@@ -449,7 +527,8 @@ def save_predictions(path, pred, pred_raw, obs, extra_attrs=None):
         'domain': json.dumps([LAT_MIN, LAT_MAX, LON_MIN, LON_MAX]), 'wcd_min': WCD_MIN,
         'fss_threshold': FSS_THRESHOLD, 'fss_window': FSS_WINDOW,
         'hyperparams': json.dumps(run_meta['hyperparams']), 'model': json.dumps(run_meta['model']),
-        'training': json.dumps(run_meta.get('training')), **(extra_attrs or {})})
+        'training': json.dumps(run_meta.get('training')), 'run_tag': RUN_TAG, 'seed': SEED,
+        'n_lags': N_LAGS, 'lag_control': int(LAG_CONTROL), **(extra_attrs or {})})
     ds_out.to_netcdf(path)
     print(f"Saved → {path}", flush=True)
 
@@ -462,8 +541,11 @@ if missing_extra:
     print(f"EXTRA_PRED_YEARS {missing_extra}: no complete {AGG_HOURS}-h windows in the data — skipped", flush=True)
 if extra_years:
     idx_extra   = np.where(np.isin(years, extra_years))[0]
+    if N_LAGS > 1:
+        idx_extra = idx_extra[_has_hist[idx_extra]]
     obs_extra   = ds['ltg'].isel(time=idx_extra)
-    extra_X     = to_tensor(zscore_X(ds_model[feature_name].isel(time=idx_extra)))
+    extra_X     = (to_tensor(zscore_X(ds_model[feature_name].isel(time=idx_extra))) if N_LAGS == 1
+                   else stack_lags(idx_extra))
     pred_ex_raw = to_counts(predict_raw(extra_X), obs_extra)
     pred_ex     = np.interp(pred_ex_raw, qp, qo).reshape(pred_ex_raw.shape) if CALIBRATE else pred_ex_raw
     save_predictions(EXTRA_PATH, pred_ex, pred_ex_raw, obs_extra,
