@@ -1,0 +1,197 @@
+Auditing settings from train_unet.py: LOSS=poisson, features=['precipitation', 'total_totals_index', 'ciwc500', 'total_column_cloud_ice_water', 'cape', 'k_index', 'total_column_cloud_liquid_water', 'lsm']
+  val [2021]  test [2022, 2024]  excluded [2023, 2025]
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  A1. Cache consistency with train_unet.py settings
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  [PASS] cache variables match the training settings
+  [PASS] time step 0 days 12:00:00 (expected 12 h)
+  [PASS] time sorted and unique (0 duplicates)
+  [PASS] months in cache: [10, 11, 12]
+  [PASS] lat spacing regular (-0.2500…-0.2500)
+  [PASS] lon spacing regular (0.2500…0.2500)
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  A2. Physical ranges (12-hour values the model sees)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  [PASS] precipitation                    min           0  max       22.72  NaN 0.0000  outside [0, 200]: 0.00000
+  [PASS] total_totals_index               min      -20.23  max       60.67  NaN 0.0000  outside [-60, 80]: 0.00000
+  [PASS] ciwc500                          min   -2.91e-11  max   0.0003557  NaN 0.0000  outside [0, 0.01]: 0.00000
+  [PASS] total_column_cloud_ice_water     min  -2.384e-07  max       1.162  NaN 0.0000  outside [0, 20]: 0.00000
+  [PASS] cape                             min  -0.0009766  max        5636  NaN 0.0000  outside [0, 20000]: 0.00000
+  [PASS] k_index                          min      -73.23  max       38.55  NaN 0.0000  outside [-80, 70]: 0.00000
+  [PASS] total_column_cloud_liquid_water  min  -2.384e-07  max       1.158  NaN 0.0000  outside [0, 20]: 0.00000
+  [PASS] lsm                              min           0  max           1  NaN 0.0000  outside [0, 1]: 0.00000
+  [PASS] ltg                              min           0  max        4549  NaN 0.0000  outside [0, 10000000.0]: 0.00000
+  [PASS] lightning totals are whole stroke counts (non-integer fraction 0.00000)
+  [PASS] land-sea mask constant in time (max std 3.49e-05)
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  A3. Completeness per year (12-hour windows; zero-everywhere fields = missing data)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+      windows     split  precipitation  total_totals_i  ciwc500  total_column_c  cape  k_index
+year                                                                                          
+2013      184     train           0.00            0.00     0.00            0.00  0.00     0.00
+2014      184     train           0.00            0.00     0.00            0.00  0.00     0.00
+2015      184     train           0.00            0.00     0.00            0.00  0.00     0.00
+2016      184     train           0.00            0.00     0.00            0.00  0.00     0.00
+2017      184     train           0.00            0.00     0.01            0.00  0.00     0.00
+2018      184     train           0.00            0.00     0.00            0.00  0.00     0.00
+2019      184     train           0.00            0.00     0.00            0.00  0.00     0.00
+2020      184     train           0.00            0.00     0.00            0.00  0.00     0.00
+2021      184       val           0.00            0.00     0.00            0.00  0.00     0.00
+2022      184      test           0.00            0.00     0.00            0.00  0.00     0.00
+2023      184  excluded           0.00            0.00     0.00            0.00  0.00     0.00
+2024      184      test           0.00            0.00     0.00            0.00  0.00     0.00
+2025      184  excluded           1.00            0.00     0.00            0.00  0.00     0.00
+  [PASS] every used year complete, no all-zero input fields
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  A4. Duplicated data (copy/merge errors)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  [PASS] no duplicated years and no identical input windows
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  A5. Lightning record over the years (WWLLN detection efficiency changes with time)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+       mean  events     split
+year                         
+2013 1.1870  0.0528     train
+2014 1.6086  0.0681     train
+2015 1.3382  0.0449     train
+2016 1.5175  0.0458     train
+2017 1.6902  0.0480     train
+2018 2.1263  0.0658     train
+2019 2.1926  0.0691     train
+2020 1.4925  0.0536     train
+2021 1.9190  0.0587       val
+2022 1.2521  0.0396      test
+2023 0.7156  0.0301  excluded
+2024 1.3921  0.0490      test
+2025 1.9810  0.0557  excluded
+         trend in mean strokes per 12 h: +0.8% per year
+  [PASS] test-years / train-years mean lightning = 0.80
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  A6. Time & space alignment of lightning vs inputs (hourly file)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  2017 precipitation                  -24h:0.041  -12h:0.059  -6h:0.082  -3h:0.144  -2h:0.197  -1h:0.283  +0h:0.344  +1h:0.291  +2h:0.213  +3h:0.162  +6h:0.094  +12h:0.056  +24h:0.037
+  [PASS] 2017: lightning best matches precipitation at lag +0 h (expect 0 or ±1)
+  2017 total_column_cloud_ice_water   -24h:0.037  -12h:0.065  -6h:0.092  -3h:0.133  -2h:0.152  -1h:0.170  +0h:0.182  +1h:0.183  +2h:0.172  +3h:0.154  +6h:0.104  +12h:0.058  +24h:0.028
+         2017: total_column_cloud_ice_water best lag +1 h (ERA5 field; physical lags of a few hours are possible)
+  2017 cape                           -24h:0.069  -12h:0.090  -6h:0.116  -3h:0.131  -2h:0.135  -1h:0.138  +0h:0.138  +1h:0.136  +2h:0.130  +3h:0.123  +6h:0.103  +12h:0.074  +24h:0.045
+         2017: cape best lag +0 h (ERA5 field; physical lags of a few hours are possible)
+  2017 precipitation spatial shift (rows dy=-2..2, cols dx=-2..2):
+     0.175 0.216 0.251 0.256 0.228
+     0.199 0.265 0.321 0.311 0.249
+     0.213 0.291 0.351 0.316 0.233
+     0.201 0.253 0.278 0.245 0.186
+     0.170 0.191 0.192 0.170 0.138
+  [PASS] 2017: lightning lines up with precipitation at shift (0, 0) (expect (0, 0)); N–S flipped correlation 0.057 vs aligned 0.351
+  2022 precipitation                  -24h:0.017  -12h:0.051  -6h:0.076  -3h:0.130  -2h:0.181  -1h:0.275  +0h:0.349  +1h:0.294  +2h:0.209  +3h:0.154  +6h:0.088  +12h:0.050  +24h:0.020
+  [PASS] 2022: lightning best matches precipitation at lag +0 h (expect 0 or ±1)
+  2022 total_column_cloud_ice_water   -24h:0.027  -12h:0.083  -6h:0.111  -3h:0.137  -2h:0.150  -1h:0.165  +0h:0.175  +1h:0.174  +2h:0.165  +3h:0.150  +6h:0.108  +12h:0.062  +24h:0.019
+         2022: total_column_cloud_ice_water best lag +0 h (ERA5 field; physical lags of a few hours are possible)
+  2022 cape                           -24h:0.021  -12h:0.050  -6h:0.070  -3h:0.080  -2h:0.083  -1h:0.085  +0h:0.084  +1h:0.083  +2h:0.080  +3h:0.077  +6h:0.067  +12h:0.051  +24h:0.022
+         2022: cape best lag -1 h (ERA5 field; physical lags of a few hours are possible)
+  2022 precipitation spatial shift (rows dy=-2..2, cols dx=-2..2):
+     0.180 0.223 0.257 0.259 0.230
+     0.204 0.271 0.327 0.314 0.251
+     0.215 0.295 0.356 0.319 0.235
+     0.195 0.247 0.272 0.239 0.182
+     0.159 0.181 0.185 0.164 0.135
+  [PASS] 2022: lightning lines up with precipitation at shift (0, 0) (expect (0, 0)); N–S flipped correlation 0.053 vs aligned 0.356
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  B1. Split
+════════════════════════════════════════════════════════════════════════════════════════════════════
+         train [2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020] | val [2021] | test [2022, 2024] | excluded [2023, 2025]
+  [PASS] train/val/test years are disjoint 
+  [PASS] windows — train 1472, val 184, test 368
+         closest train→test distance: 638 days (seasons are Oct–Dec only, so neighbouring years are ~9 months apart)
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  B2. Checkpoint provenance (was the model trained on these years only?)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  [PASS] checkpoint trained on [2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]
+  [PASS] checkpoint features/loss match current settings (2026-11-16T12:25:49)
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  B3. Prediction file provenance
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  [PASS] prediction times are all in test years [2022, 2024]
+  [PASS] predictions come from a model trained on [2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]
+  [PASS] observed lightning in the prediction file equals the data file
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  B4. Inputs suspiciously close to the target (a leaked copy of lightning would score ≈ 1)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  [PASS] 'ltg' is not an input
+  [PASS] precipitation                    |r| with lightning (training years): pearson 0.38, pearson log 0.51, spearman ltg>0 0.39
+  [PASS] total_totals_index               |r| with lightning (training years): pearson 0.10, pearson log 0.24, spearman ltg>0 0.18
+  [PASS] ciwc500                          |r| with lightning (training years): pearson 0.08, pearson log 0.21, spearman ltg>0 0.16
+  [PASS] total_column_cloud_ice_water     |r| with lightning (training years): pearson 0.19, pearson log 0.36, spearman ltg>0 0.25
+  [PASS] cape                             |r| with lightning (training years): pearson 0.09, pearson log 0.14, spearman ltg>0 0.31
+  [PASS] k_index                          |r| with lightning (training years): pearson 0.10, pearson log 0.23, spearman ltg>0 0.21
+  [PASS] total_column_cloud_liquid_water  |r| with lightning (training years): pearson 0.06, pearson log 0.14, spearman ltg>0 0.09
+  [PASS] lsm                              |r| with lightning (training years): pearson 0.05, pearson log 0.10, spearman ltg>0 0.10
+         Reminder: choose inputs, loss and settings using training/validation years only. Rankings made on test years (e.g. an old Fig 5) leak test information into design decisions.
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  C. Skill vs baselines on the test years
+════════════════════════════════════════════════════════════════════════════════════════════════════
+                           mean ratio event rate o/p FSS mean FSS pooled FSS ≥10 strokes   CSI R² clim r clim R² log1p
+climatology (raw)               1.244    0.044/0.457    0.139      0.149           0.039 0.071   0.310  0.715   -2.314
+climatology (calibrated)        1.414    0.044/0.059    0.112      0.164           0.056 0.062 -66.214  0.188   -1.169
+R14 c·CAPE·P (raw)              0.819    0.044/0.065    0.547      0.672           0.472 0.362   0.531  0.744    0.245
+R14 c·CAPE·P (calibrated)       0.944    0.044/0.038    0.530      0.680           0.452 0.356   0.390  0.720    0.250
+persistence: previous 12 h      1.001    0.044/0.045    0.366      0.488           0.256 0.215   1.000  1.000   -0.379
+U-Net (raw)                     0.964    0.044/0.093    0.558      0.664           0.550 0.389   0.733  0.859    0.207
+U-Net (as saved)                0.941    0.044/0.041    0.609      0.774           0.534 0.450   0.644  0.832    0.403
+         persistence uses observed lightning 12 h earlier, which the U-Net does NOT get; it shows how much of the score is just 'storms last'. Calibrated rows are fair comparisons with the calibrated U-Net.
+  [PASS] U-Net FSS 0.609 vs best calibrated baseline (R14 c·CAPE·P (calibrated)) 0.530
+  [PASS] FSS gain over R14 c·CAPE·P (calibrated): +0.065 (95% CI +0.042 … +0.087, day bootstrap)
+         test year 2022: FSS 0.587, pooled 0.756, mean ratio 0.72, R² clim 0.426
+         test year 2024: FSS 0.632, pooled 0.787, mean ratio 1.14, R² clim 0.473
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  D. Control experiments (each trains a fresh model in memory; nothing is saved)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+         real model, seed 13: calibrated FSS 0.617  (36s)
+         real model, seed 14: calibrated FSS 0.611  (67s)
+         real model, seed 15: calibrated FSS 0.606  (97s)
+  [PASS] seed-to-seed spread of FSS: 0.611 ± 0.004 (report this ± in the thesis)
+  [PASS] retrained models reproduce the saved result (saved 0.609 vs retrained 0.611)
+  [FAIL] shuffled-target model FSS 0.231 ≤ climatology 0.112 + 0.05 (if not, the model gets lightning information from somewhere other than the inputs)
+  [PASS] with inputs 7 days earlier FSS drops 0.611 → 0.108 (a large drop means the model reads the actual weather, not just the season/geography)
+
+                         mean ratio event rate o/p FSS mean FSS pooled FSS ≥10 strokes   CSI R² clim r clim R² log1p
+real (mean of seeds)          0.945    0.044/0.041    0.611      0.777           0.535 0.454   0.605  0.813    0.407
+shuffled targets              1.865    0.044/0.057    0.231      0.368           0.171 0.155 -10.924  0.389   -0.775
+inputs 7 days earlier         1.859    0.046/0.070    0.108      0.139           0.054 0.058 -33.907  0.340   -1.438
+climatology (calibrated)      1.414    0.044/0.059    0.112      0.164           0.056 0.062 -66.214  0.188   -1.169
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  D2. Permutation importance (shuffle one input across test windows; bigger drop = more important)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  precipitation                    FSS drop +0.499
+  cape                             FSS drop +0.184
+  total_totals_index               FSS drop +0.182
+  ciwc500                          FSS drop +0.082
+  total_column_cloud_liquid_water  FSS drop +0.068
+  k_index                          FSS drop +0.045
+  total_column_cloud_ice_water     FSS drop +0.033
+  lsm                              FSS drop +0.000
+         most important input: precipitation. If 'lsm' alone dominates, the skill is mostly geography.
+  [WARN] 'precipitation' alone accounts for 99% of the skill above climatology — check that it is a genuine weather input and not derived from lightning
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  SUMMARY
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  FAIL: 1
+    - [D] shuffled-target model FSS 0.231 ≤ climatology 0.112 + 0.05 (if not, the model gets lightning information from somewhere other than the inputs)
+  WARN: 1
+    - [D2] 'precipitation' alone accounts for 99% of the skill above climatology — check that it is a genuine weather input and not derived from lightning
+  PASS: 45
+
+  Figures: figures/audit/unet_12h_poisson_cal_0cd1de/
