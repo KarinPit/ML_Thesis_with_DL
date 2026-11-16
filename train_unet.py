@@ -42,7 +42,7 @@ MSE_UNNORM = 'direct'          # LOSS='mse' only: 'direct' = invert the z-score 
                                # Only post-processing changes: set RETRAIN = False to reuse the MSE model.
 AGG_HOURS = 12                 # window length in hours: any whole number (3, 6, 12, 24, 48 …)
 CALIBRATE = True               # quantile-map predictions to the observed distribution (fit on val year)
-RETRAIN   = True               # False = reuse the saved checkpoint (e.g. after fixing test-year data only).
+RETRAIN   = False               # False = reuse the saved checkpoint (e.g. after fixing test-year data only).
                                # Refused if the checkpoint was trained on different years/inputs (no leakage).
 
 DATA_DIR   = '/home/ec2-user/ML_Thesis_with_DL/data'
