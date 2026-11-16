@@ -27,8 +27,14 @@ Conventions used in every figure
   • skill = FSS for "≥ 1 stroke per window" in a 3 × 3-cell neighbourhood unless stated
   • 95 % confidence intervals from a block bootstrap over BLOCK_DAYS-day blocks (storms last days,
     so single windows are not independent)
-  • baselines are calibrated with the same quantile mapping as the U-Net (fitted on the validation
-    year) for every skill score; for maps of the mean, CAPE × P uses its fitted constant only
+  • two versions of every model, each where it fits:
+      - calibrated (quantile-mapped on the validation year) for yes/no event scores: FSS, CSI, POD, case studies.
+        Quantile mapping onto whole stroke counts (~96 % zeros) turns most low values into exact 0 and the rest
+        into values near 1, 2, 3 … — right for "is there lightning?", wrong for averages and rankings.
+      - expected strokes (U-Net: the Poisson rate before calibration; CAPE × P: its fitted constant) for
+        everything that averages or ranks amounts: mean maps, bias, land/sea, domain totals, ILDN, all-pixels.
+  • differences between two models are tested on the per-window difference (paired bootstrap), because all
+    models share the same easy and hard days; the interval of one model alone is much wider
   • no titles inside figures and no run-id footers — the caption says what a figure shows
 
 Inputs for figures that need extra runs — train_unet.py makes them with command-line options and names
@@ -282,6 +288,11 @@ def boot_ci(vals, blocks, n=N_BOOT, seed=0):
     return tuple(np.percentile(b, [2.5, 97.5]))
 
 
+def paired_ci(a, b, blocks):
+    """Mean of a − b (per-window scores of two models on the same windows) with its 95 % block-bootstrap CI."""
+    return mean_ci(np.asarray(a, float) - np.asarray(b, float), blocks)
+
+
 def mean_ci(vals, blocks, seed=0):
     v = np.asarray(vals, float)
     lo, hi = boot_ci(v, blocks, seed=seed)
@@ -411,7 +422,7 @@ class Data:
         clim = {m: ltg[idx_tr][mon[idx_tr] == m].mean(0) for m in sorted(set(mon))}
         clim_va = np.stack([clim[m] for m in mon[idx_va]]); clim_te = np.stack([clim[m] for m in mon[idx_te]])
         M['Climatology'] = calibrate(clim_va, obs_va, clim_te)
-        RAW = {'Climatology': clim_te}
+        RAW = {'U-Net': M.get('U-Net (raw)', M['U-Net']), 'Climatology': clim_te}
         if 'cape' in ds and 'precipitation' in ds:
             cp = (np.nan_to_num(ds['cape'].values).clip(min=0) * np.nan_to_num(ds['precipitation'].values).clip(min=0))
             c_r14 = ltg[idx_tr].sum() / max(cp[idx_tr].sum(), 1e-12)
@@ -419,6 +430,7 @@ class Data:
             M['CAPE × P'] = calibrate(c_r14 * cp[idx_va], obs_va, RAW['CAPE × P'])
             c['r14_c'] = float(c_r14)
             c['r14_rate'] = RAW['CAPE × P']
+            c['r14_rate_val'] = (c_r14 * cp[idx_va]).astype('float32')
         prev = np.full_like(obs_te, np.nan)
         step = np.timedelta64(self.agg, 'h')
         for j, i in enumerate(idx_te):
@@ -613,11 +625,12 @@ def _pred_file_fss(D, path, var, c):
 
 def F3_ablation(D):
     c = D.core()
-    rows = []
+    rows, series_of = [], []
     for label, fname, var, old in ABLATION:
         path = D.path(fname)
         series = _pred_file_fss(D, path, var, c) if fname else fss_series(c['obs'], c['M']['U-Net'] if var == 'pred_count'
                                                                          else c['M']['U-Net (raw)'])
+        series_of.append(series)
         if series is not None:
             m, lo, hi = mean_ci(series, c['blocks'])
             rows.append((label, m, lo, hi, 'file'))
@@ -644,6 +657,16 @@ def F3_ablation(D):
         else:
             ax.plot(m, yi, 'o', mfc='white', mec=COL['U-Net'], ms=4)
         ax.text(m + 0.012, yi + 0.12, f'{m:.2f}', fontsize=6.5, va='bottom')
+    gains = {}
+    for i in range(1, len(rows)):                   # gain over the previous step, paired on the same windows
+        if series_of[i] is not None and series_of[i - 1] is not None:
+            g = paired_ci(series_of[i], series_of[i - 1], c['blocks'])
+            gains[rows[i][0]] = g
+            ax.text(1.02, (y[i] + y[i - 1]) / 2, f"{g[0]:+.3f}\n[{g[1]:+.3f}, {g[2]:+.3f}]", transform=ax.get_yaxis_transform(),
+                    fontsize=5.8, va='center', color='0.3')
+    if gains:
+        ax.text(1.02, y.max() + 0.6, 'gain over the\nstep above [95 % CI]', transform=ax.get_yaxis_transform(),
+                fontsize=5.8, va='center', color='0.3', fontweight='bold')
     if r14:
         ax.axvline(r14[0], color=COL['CAPE × P'], ls='--', lw=0.9)
         ax.text(r14[0], y.max() + 0.6, 'CAPE × P\n(calibrated)', color=COL['CAPE × P'], fontsize=6.3, ha='center')
@@ -655,12 +678,21 @@ def F3_ablation(D):
         ax.plot([], [], 'o', mfc='white', mec=COL['U-Net'], ms=4, label='earlier run (no CI yet)')
         ax.errorbar([], [], xerr=[], fmt='o', color=COL['U-Net'], ms=4, label='this run, 95 % CI')
         ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.2), ncol=2, fontsize=6.3)
-    NUMBERS['F3'] = {r[0]: {'fss': r[1], 'ci': [r[2], r[3]], 'source': r[4]} for r in rows}
+    NUMBERS['F3'] = {r[0]: {'fss': r[1], 'ci': [r[2], r[3]], 'source': r[4],
+                            'gain_vs_previous': list(gains[r[0]]) if r[0] in gains else None} for r in rows}
     gain = rows[-1][1] - rows[0][1] if np.isfinite(rows[-1][1]) and np.isfinite(rows[0][1]) else np.nan
+    vs_r14 = (paired_ci(fss_series(c['obs'], c['M']['U-Net']), fss_series(c['obs'], c['M']['CAPE × P']), c['blocks'])
+              if 'CAPE × P' in c['M'] else None)
+    NUMBERS['F3']['final_minus_cape_p'] = list(vs_r14) if vs_r14 else None
     save(fig, 'F03_ablation',
          f"Ablation from the set-up of Jones et al. (2026) to the final model. Each row adds one change; points show "
          f"the mean FSS (3 × 3 cells, ≥ 1 stroke per window) on the test years with 95 % block-bootstrap confidence "
-         f"intervals. Total gain: {fmt(gain)}. The dashed line is the calibrated CAPE × P baseline.")
+         f"intervals. These intervals are wide because some days are harder than others for every model; whether a "
+         f"step helps is tested on the per-window difference between consecutive steps (numbers on the right, "
+         f"paired 95 % CI), where both have predictions. Total gain: {fmt(gain)}. The dashed line is the calibrated "
+         f"CAPE × P baseline" + (f"; final model minus CAPE × P: {fmt_ci(*vs_r14, nd=3)} (paired)." if vs_r14 else '.')
+         + (" Open circles: earlier runs, shown without intervals until their predictions are regenerated."
+            if any(r[4] == 'earlier run' for r in rows) else ''))
 
 
 def _models_for_skill(c):
@@ -671,16 +703,27 @@ def F4_fss_vs_scale(D):
     c = D.core()
     models = _models_for_skill(c)
     f0 = (c['obs'] >= THR).mean()
-    fig, (ax, bx) = plt.subplots(1, 2, figsize=(W2, 2.7), gridspec_kw={'width_ratios': [1.35, 1]})
-    res = {}
+    fig, (ax, dx, bx) = plt.subplots(1, 3, figsize=(W2, 2.6), gridspec_kw={'width_ratios': [1.25, 1, 1]})
+    res, per_w = {}, {}
     for name in models:
         mm, lo, hi = [], [], []
-        for s in SCALES:
-            m, l, h = mean_ci(fss_series(c['obs'], c['M'][name], w=s, valid=D.valid(name, c)), c['blocks'])
+        per_w[name] = [fss_series(c['obs'], c['M'][name], w=s, valid=D.valid(name, c)) for s in SCALES]
+        for sr in per_w[name]:
+            m, l, h = mean_ci(sr, c['blocks'])
             mm.append(m); lo.append(l); hi.append(h)
         res[name] = (np.array(mm), np.array(lo), np.array(hi))
         ax.plot(SCALES, mm, '-o', color=COL[name], ms=2.5, lw=1.2, label=name)
         ax.fill_between(SCALES, lo, hi, color=COL[name], alpha=0.18, lw=0)
+    diffs = {}                                         # (b) U-Net − model, paired on the same windows
+    for name in [n for n in models if n not in ('U-Net', 'Climatology')]:
+        d = np.array([paired_ci(per_w['U-Net'][k], per_w[name][k], c['blocks']) for k in range(len(SCALES))])
+        diffs[name] = d
+        dx.plot(SCALES, d[:, 0], '-o', color=COL[name], ms=2.5, lw=1.2)
+        dx.fill_between(SCALES, d[:, 1], d[:, 2], color=COL[name], alpha=0.2, lw=0)
+    dx.axhline(0, color='0.3', lw=0.7)
+    dx.set_xticks(SCALES); dx.set_xticklabels([str(s) if s in (1, 3, 5, 9, 17, 25) else '' for s in SCALES])
+    dx.set_xlabel('neighbourhood size (cells)'); dx.set_ylabel('FSS of U-Net − FSS of model')
+    letter(dx, 'b')
     ax.axhline(0.5 + f0 / 2, color='0.4', ls=':', lw=0.8)
     ax.text(SCALES[-1], 0.5 + f0 / 2 + 0.01, 'useful skill', fontsize=6, ha='right', va='bottom', color='0.4')
     ax.set_xlabel('neighbourhood size (cells; 1 cell = 0.25°)'); ax.set_ylabel('FSS (≥ 1 stroke)')
@@ -698,19 +741,25 @@ def F4_fss_vs_scale(D):
                    yerr=[[mu - lo], [hi - mu]] if np.isfinite(lo) else None, error_kw={'lw': 0.7, 'capsize': 1.5})
     bx.set_xticks(range(len(months))); bx.set_xticklabels([pd.Timestamp(2000, m, 1).strftime('%b') for m in months])
     bx.set_ylabel('FSS (3 × 3 cells)'); bx.set_ylim(0, 1)
-    letter(bx, 'b')
+    letter(bx, 'c')
     fig.tight_layout()
     i3 = SCALES.index(3) if 3 in SCALES else 1
     NUMBERS['F4'] = {n: {'fss_by_scale': dict(zip(map(str, SCALES), np.round(v[0], 4).tolist())),
-                         'fss_3x3_ci': [float(v[1][i3]), float(v[2][i3])]} for n, v in res.items()}
+                         'fss_3x3_ci': [float(v[1][i3]), float(v[2][i3])],
+                         'unet_minus_model_3x3': diffs[n][i3].tolist() if n in diffs else None} for n, v in res.items()}
     u, b = res['U-Net'], res.get('CAPE × P')
+    dr = diffs.get('CAPE × P')
     save(fig, 'F04_fss_vs_scale',
          f"(a) Fractions Skill Score for ≥ 1 stroke per {D.agg} h as a function of neighbourhood size, test years "
          f"{', '.join(map(str, c['te_years']))}. Shading: 95 % block-bootstrap confidence intervals. Dotted line: "
          f"useful-skill level 0.5 + f₀/2 (f₀ = {f0:.3f}). At 3 × 3 cells the U-Net reaches "
          f"{fmt_ci(u[0][i3], u[1][i3], u[2][i3])}"
          + (f" against {fmt_ci(b[0][i3], b[1][i3], b[2][i3])} for calibrated CAPE × P" if b else '') +
-         ". (b) FSS at 3 × 3 cells by month.")
+         ". The bands overlap because some days are harder than others for every model. (b) The difference that "
+         "matters: FSS of the U-Net minus FSS of each baseline, computed window by window, with its 95 % "
+         "block-bootstrap interval; above zero = U-Net better"
+         + (f" (CAPE × P at 3 × 3 cells: {fmt_ci(*dr[i3], nd=3)})" if dr is not None else '') +
+         ". Climatology is left out of (b) because its difference is off the scale. (c) FSS at 3 × 3 cells by month.")
 
 
 def _block_ttest(diff, blocks):
@@ -725,7 +774,7 @@ def _block_ttest(diff, blocks):
 def F5_bias_maps(D):
     c = D.core()
     obs_d = c['to_density'](c['obs'].mean(0))
-    models = [('U-Net', c['M']['U-Net'])] + ([('CAPE × P', c['RAW']['CAPE × P'])] if 'CAPE × P' in c['RAW'] else [])
+    models = [('U-Net', c['RAW']['U-Net'])] + ([('CAPE × P', c['RAW']['CAPE × P'])] if 'CAPE × P' in c['RAW'] else [])
     lats, lons = c['lats'], c['lons']
     ext = [lons.min() - 0.125, lons.max() + 0.125, lats.min() - 0.125, lats.max() + 0.125]
     fig, axs = map_axes(1 + len(models), 1, W2 * 0.78, extra_h=0.2, hspace=0.12, extent=ext)
@@ -746,9 +795,9 @@ def F5_bias_maps(D):
         ax = axs[k, 0]
         im = draw_map(ax, c, d, plt.cm.RdBu_r, norm, ticks=(k == len(models), True))
         ns = (pmap >= 0.05) | ~np.isfinite(pmap)
-        yy, xx = np.where(ns)
+        yy, xx = np.where(~ns)                                      # dots = significant
         sk = {'transform': PROJ} if PROJ is not None else {}
-        ax.scatter(lons[xx], lats[yy], s=0.6, c='0.2', marker='.', lw=0, **sk)
+        ax.scatter(lons[xx], lats[yy], s=1.2, c='k', marker='.', lw=0, **sk)
         ax.text(0.01, 0.03, f'{name} − observed', transform=ax.transAxes, fontsize=7,
                 bbox=dict(fc='white', ec='none', alpha=0.8, pad=1))
         letter(ax, 'abc'[k])
@@ -758,8 +807,9 @@ def F5_bias_maps(D):
     NUMBERS['F5'] = stats
     save(fig, 'F05_bias_maps',
          "(a) Observed mean WWLLN stroke density on the test years (strokes km⁻² yr⁻¹, Oct–Dec rate). "
-         "(b) U-Net minus observed and (c) CAPE × P (constant fitted on the training years) minus observed. "
-         f"Stippling marks cells where the difference is not significant (p ≥ 0.05, t-test on {BLOCK_DAYS}-day block "
+         "(b) U-Net (expected strokes = Poisson rate, before calibration) minus observed and (c) CAPE × P (constant "
+         "fitted on the training years) minus observed. "
+         f"Dots mark cells where the difference is significant (p < 0.05, t-test on {BLOCK_DAYS}-day block "
          "means). " + ' '.join(f"{n}: mean bias {fmt(s['mean_bias'], 3)}, significant in {100 * s['frac_significant']:.0f} % of cells."
                                for n, s in stats.items()))
 
@@ -769,7 +819,7 @@ def F6_cell_scatter(D):
     if c['lsm'] is None:
         raise Missing('land–sea mask (lsm) in the aggregated data file')
     obs_d = c['to_density'](c['obs'].mean(0))
-    models = [('U-Net', c['to_density'](c['M']['U-Net'].mean(0)))]
+    models = [('U-Net', c['to_density'](c['RAW']['U-Net'].mean(0)))]
     if 'CAPE × P' in c['RAW']:
         models.append(('CAPE × P', c['to_density'](c['RAW']['CAPE × P'].mean(0))))
     rows = [('land', c['lsm'] >= LAND_LSM), ('sea', c['lsm'] < LAND_LSM)]
@@ -808,7 +858,8 @@ def F6_cell_scatter(D):
     NUMBERS['F6'] = stats
     save(fig, 'F06_cell_scatter_land_sea',
          "Mean stroke density per grid cell on the test years, modelled against observed (log–log), over land "
-         f"(top, lsm ≥ {LAND_LSM}) and sea (bottom). Colours: number of cells; black line: 1:1. r is the correlation "
+         f"(top, lsm ≥ {LAND_LSM}) and sea (bottom). Modelled = expected strokes: the U-Net Poisson rate before "
+         "calibration, and CAPE × P with its constant fitted on the training years. Colours: number of cells; black line: 1:1. r is the correlation "
          "of the log values; R² measures agreement with the 1:1 line.")
 
 
@@ -866,9 +917,40 @@ def _prob_models(D, c):
     return P
 
 
+def _val_rate(D, c):
+    """U-Net Poisson rate on the validation windows (rebuilt from the checkpoint)."""
+    if 'val_rate' not in D._cache:
+        mc = ModelCtx(D)
+        iv, Xv = mc.inputs(c['idx_va'])
+        D._cache['val_rate'] = (iv, mc.rate(Xv))
+    return D._cache['val_rate']
+
+
+def _calibrate_probs(D, c, P):
+    """Isotonic regression of the observed event on the forecast probability, fitted on the validation year."""
+    from sklearn.isotonic import IsotonicRegression
+    out_, notes = {}, []
+    val = {}
+    try:
+        iv, rv = _val_rate(D, c)
+        val['U-Net'] = (1 - np.exp(-rv), c['ltg_all'][iv] >= THR)
+    except Missing as e:
+        notes.append(f'U-Net probabilities not calibrated (needs {e})')
+    if 'r14_rate_val' in c:
+        val['CAPE × P'] = (1 - np.exp(-c['r14_rate_val']), c['obs_val'] >= THR)
+    for name, (pv, ov) in val.items():
+        iso = IsotonicRegression(y_min=0, y_max=1, out_of_bounds='clip').fit(pv.ravel(), ov.ravel().astype(float))
+        out_[name] = iso.predict(P[name].ravel()).reshape(P[name].shape)
+    return out_, notes
+
+
 def F8_reliability(D):
     c = D.core()
-    P = _prob_models(D, c)
+    P_raw = _prob_models(D, c)
+    P_cal, notes = _calibrate_probs(D, c, P_raw)
+    for n in notes:
+        print('   ', n, flush=True)
+    P = {**P_raw, **P_cal}                       # calibrated where possible
     o = (c['obs'] >= THR).ravel()
     edges = np.array([0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0001])
     fig, (ax, bx) = plt.subplots(1, 2, figsize=(W2, 3.2))
@@ -894,9 +976,17 @@ def F8_reliability(D):
             auc, ap = roc_auc_score(o[sub], f[sub]), average_precision_score(o[sub], f[sub])
         except Exception:
             auc = ap = np.nan
-        stats[name] = {'brier': float(bs), 'bss_vs_clim': float(bss), 'roc_auc': float(auc), 'pr_auc': float(ap)}
+        stats[name] = {'brier': float(bs), 'bss_vs_clim': float(bss), 'roc_auc': float(auc), 'pr_auc': float(ap),
+                       'calibrated': name in P_cal}
         ax.plot(mf[ok], of[ok], '-o', ms=2.5, lw=1.2, color=COL[name],
                 label=f"{name} (BSS {fmt(bss)})" if name != 'Climatology' else name)
+        if name in P_cal:                        # before calibration: thin dashed line
+            fr = P_raw[name].ravel()
+            ir = np.digitize(fr, edges) - 1
+            mr = np.array([fr[ir == i].mean() if np.sum(ir == i) >= 30 else np.nan for i in range(len(edges) - 1)])
+            orr = np.array([o[ir == i].mean() if np.sum(ir == i) >= 30 else np.nan for i in range(len(edges) - 1)])
+            stats[name]['bss_before_calibration'] = float(1 - np.mean((fr - o) ** 2) / clim_bs) if clim_bs else np.nan
+            ax.plot(mr, orr, '--', lw=0.8, color=COL[name], alpha=0.7)
         thr = np.linspace(0.02, 0.98, 49)
         pod, sr = [], []
         for t in thr:
@@ -906,6 +996,8 @@ def F8_reliability(D):
         bx.plot(sr, pod, '-', lw=1.2, color=COL[name], label=f'{name} (AUC {fmt(auc)})')
     ax.plot([0, 1], [0, 1], 'k:', lw=0.7)
     ax.set_xlabel('forecast probability of ≥ 1 stroke'); ax.set_ylabel('observed frequency')
+    if P_cal:
+        ax.plot([], [], '--', lw=0.8, color='0.4', label='before calibration')
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_aspect('equal'); ax.legend(loc='upper left'); letter(ax, 'a')
     ins = ax.inset_axes([0.6, 0.08, 0.36, 0.25])
     ins.hist(P['U-Net'].ravel(), bins=edges, color=COL['U-Net'], log=True)
@@ -931,9 +1023,13 @@ def F8_reliability(D):
     u = stats.get('U-Net', {})
     save(fig, 'F08_reliability',
          "(a) Reliability diagram for the probability of at least one stroke per cell and window. For the U-Net and "
-         "CAPE × P it is 1 − e^(−λ) with λ the predicted Poisson rate; for climatology it is the training-year "
-         "frequency per cell and month. BSS: Brier skill score relative to climatology. Inset: number of U-Net "
-         "forecasts per probability bin (log scale). (b) Performance diagram: probability of detection against "
+         "CAPE × P the probability starts as 1 − e^(−λ), with λ the predicted Poisson rate. Because lightning is "
+         "clustered (overdispersed) and the predicted rate is spread over a wider area than the strokes, this "
+         "Poisson probability is far too confident (dashed lines"
+         + (f"; U-Net BSS {fmt(u.get('bss_before_calibration'))}" if 'bss_before_calibration' in u else '') +
+         "). Solid lines: after calibrating it on the validation year (isotonic regression). For climatology it is "
+         "the training-year frequency per cell and month. BSS: Brier skill score relative to climatology. Inset: "
+         "number of calibrated U-Net forecasts per probability bin (log scale). (b) Performance diagram: probability of detection against "
          "success ratio for probability thresholds 0.02–0.98; grey curves are CSI, dashed lines frequency bias. "
          f"U-Net: BSS {fmt(u.get('bss_vs_clim'))}, ROC AUC {fmt(u.get('roc_auc'))}, PR AUC {fmt(u.get('pr_auc'))}.")
 
@@ -944,9 +1040,9 @@ def F9_season(D):
     t = pd.DatetimeIndex(c['times'])
     fig, axs = plt.subplots(2 * len(years), 1, figsize=(W2, 2.0 * len(years) + 0.4), sharex=False,
                             gridspec_kw={'height_ratios': [1.3, 1] * len(years)})
-    series = {'Observed': c['obs'].sum((1, 2)), 'U-Net': c['M']['U-Net'].sum((1, 2))}
-    if 'CAPE × P' in c['M']:
-        series['CAPE × P'] = c['M']['CAPE × P'].sum((1, 2))
+    series = {'Observed': c['obs'].sum((1, 2)), 'U-Net': c['RAW']['U-Net'].sum((1, 2))}
+    if 'CAPE × P' in c['RAW']:
+        series['CAPE × P'] = c['RAW']['CAPE × P'].sum((1, 2))
     fss = {n: fss_series(c['obs'], c['M'][n], valid=D.valid(n, c)) for n in ['U-Net', 'CAPE × P', 'Climatology'] if n in c['M']}
     stats = {}
     for k, y in enumerate(years):
@@ -965,13 +1061,13 @@ def F9_season(D):
         rr = spearmanr(series['Observed'][sel], series['U-Net'][sel])[0]
         stats[str(y)] = {'spearman_domain_total_unet': float(rr)}
         letter(ax, 'abcdef'[2 * k]); letter(bx, 'abcdef'[2 * k + 1])
-    axs[0].legend(loc='upper right', ncol=3)
     fig.tight_layout()
+    fig.legend(*axs[0].get_legend_handles_labels(), loc='lower center', bbox_to_anchor=(0.5, 1.0), ncol=3)
     NUMBERS['F9'] = stats
     save(fig, 'F09_season_timeseries',
          f"Lightning through each test season. Top of each pair: strokes per {D.agg}-h window summed over the domain, "
-         "observed and modelled (log scale). Bottom: FSS (3 × 3 cells, ≥ 1 stroke) as a 5-day running mean for the "
-         "U-Net and the calibrated baselines. " +
+         "observed and modelled as expected strokes (U-Net Poisson rate; CAPE × P with its fitted constant), log scale. "
+         "Bottom: FSS (3 × 3 cells, ≥ 1 stroke) as a 5-day running mean for the calibrated U-Net and baselines. " +
          ' '.join(f"{y}: Spearman r of domain totals {fmt(v['spearman_domain_total_unet'])}." for y, v in stats.items()))
 
 
@@ -1104,7 +1200,7 @@ def F11_importance(D):
     save(fig, 'F11_input_importance',
          f"Permutation importance: the drop in mean FSS (3 × 3 cells, ≥ 1 stroke; {fmt(base)} without shuffling) when "
          f"one input is shuffled across the test windows (land–sea mask: shuffled across cells), mean ± s.d. of "
-         f"{N_PERM} repeats. The most important input is {NICE.get(top, top).lower()}.")
+         f"{N_PERM} repeats. The most important input is {NICE.get(top, top)}.")
 
 
 def F12_ildn(D):
@@ -1149,7 +1245,9 @@ def F12_ildn(D):
          f"Independent comparison with the Israeli Lightning Detection Network (ILDN) in the box "
          f"{ILDN_BOX[0]}–{ILDN_BOX[1]}°N, {ILDN_BOX[2]}–{ILDN_BOX[3]}°E, Oct–Dec {', '.join(map(str, years))}. "
          "(a–d) Mean lightning divided by its box mean, so patterns are comparable despite different detection "
-         "efficiencies; r is the Spearman correlation with the ILDN map. Bottom: strokes per window in the box.")
+         "efficiencies; r is the Spearman correlation with the ILDN map. Bottom: strokes per window in the box. "
+         "U-Net: expected strokes (Poisson rate before calibration); CAPE × P with its fitted constant. ILDN detects "
+         "best near its sensors in Israel, so its map is weighted toward the land and coast.")
 
 
 def _ildn(D):
@@ -1160,10 +1258,11 @@ def _ildn(D):
         raise Missing(f'ILDN files {ILDN_GLOB} in {D.data_dir}')
     c = D.core()
     p = D.pred()
-    parts = [p[['pred_count', 'obs_count']]]
+    uvar = 'pred_count_raw' if 'pred_count_raw' in p else 'pred_count'     # expected strokes (Poisson rate)
+    parts = [p[[uvar, 'obs_count']]]
     ex = D.pred_path.replace('_OND_predictions.nc', '_OND_predictions_extra.nc')
     if os.path.exists(ex):
-        parts.append(xr.open_dataset(ex)[['pred_count', 'obs_count']].load())
+        parts.append(xr.open_dataset(ex)[[uvar, 'obs_count']].load())
     pr = xr.concat(parts, dim='time').sortby('time')
     cols = ['date', 'time', 'lat', 'lon', 'peak_ka', 'c6', 'n_sensors', 'c8', 'c9', 'type', 'c11', 'c12', 'c13']
     dfs = []
@@ -1194,7 +1293,7 @@ def _ildn(D):
     bi = np.where((lats >= ILDN_BOX[0]) & (lats <= ILDN_BOX[1]))[0]
     bj = np.where((lons >= ILDN_BOX[2]) & (lons <= ILDN_BOX[3]))[0]
     crop = lambda a: a[:, bi][:, :, bj]
-    fields = {'U-Net': crop(np.nan_to_num(pr['pred_count'].values)), 'WWLLN': crop(np.nan_to_num(pr['obs_count'].values))}
+    fields = {'U-Net': crop(np.nan_to_num(pr[uvar].values)), 'WWLLN': crop(np.nan_to_num(pr['obs_count'].values))}
     ds = D.prep()
     ti = {t: i for i, t in enumerate(ds.time.values)}
     ii = np.array([ti[t] for t in pr.time.values])
@@ -1249,6 +1348,7 @@ def F13_storm_history(D):
     groups = {}
     for name, pats in LAG_RUNS.items():
         files, preds = _lag_group(D, pats, c)
+        print(f"    {name}: {len(files)} file(s) " + ', '.join(os.path.basename(f) for f in files), flush=True)
         if preds:
             groups[name] = preds
     if '3 windows' not in groups:
@@ -1297,7 +1397,7 @@ def F13_storm_history(D):
         base = np.nanmean(fss_series(ltg[it], calibrate(pv, ltg[iv], mc.rate(Xt))))
         nf = len(mc.feats)
         rng = np.random.default_rng(11)
-        slot_names = [f't − {D.agg * (n_l - 1 - s)} h' if s < n_l - 1 else 't' for s in range(n_l)]
+        slot_names = [f'−{D.agg * (n_l - 1 - s)} h' if s < n_l - 1 else '0 h' for s in range(n_l)]
         drops = []
         for s in range(n_l):
             d = []
@@ -1308,7 +1408,7 @@ def F13_storm_history(D):
             drops.append((np.mean(d), np.std(d)))
         cx.bar(range(n_l), [d[0] for d in drops], yerr=[d[1] for d in drops], color=COL['3 windows'],
                error_kw={'lw': 0.7, 'capsize': 1.5})
-        cx.set_xticks(range(n_l)); cx.set_xticklabels(slot_names)
+        cx.set_xticks(range(n_l)); cx.set_xticklabels(slot_names); cx.set_xlabel('input window (0 h = the predicted one)')
         cx.set_ylabel('drop in FSS when shuffled'); letter(cx, 'c')
         stats['slot_importance'] = dict(zip(slot_names, [list(map(float, d)) for d in drops]))
     NUMBERS['F13'] = stats
@@ -1369,24 +1469,28 @@ def T3_scores(D):
     c = D.core()
     rows = []
     names = [n for n in ['U-Net', 'U-Net (raw)', 'Per-cell model', 'CAPE × P', 'Climatology', 'Persistence'] if n in c['M']]
+    s_unet = fss_series(c['obs'], c['M']['U-Net'])
     for n in names:
         v = D.valid(n, c)
         s3 = fss_series(c['obs'], c['M'][n], valid=v)
         m3, lo, hi = mean_ci(s3, c['blocks'])
+        dif = '–' if n == 'U-Net' else fmt_ci(*paired_ci(s_unet, s3, c['blocks']), nd=3)
         cat = categorical(c['obs'], c['M'][n], valid=v)
         o = c['obs'] if v is None else c['obs'][v]
         pm = c['M'][n] if v is None else c['M'][n][v]
         rows.append([n, fmt(np.nanmean(fss_series(c['obs'], c['M'][n], w=1, valid=v))), fmt_ci(m3, lo, hi),
-                     fmt(np.nanmean(fss_series(c['obs'], c['M'][n], w=5, valid=v))), fmt(cat['CSI']), fmt(cat['POD']),
-                     fmt(cat['SR']), fmt(cat['F1']), fmt(cat['freq_bias']), fmt(pm.mean() / max(o.mean(), 1e-12))])
+                     fmt(np.nanmean(fss_series(c['obs'], c['M'][n], w=5, valid=v))), dif, fmt(cat['CSI']),
+                     fmt(cat['POD']), fmt(cat['SR']), fmt(cat['F1']), fmt(cat['freq_bias']), fmt(pm.mean() / max(o.mean(), 1e-12))])
         NUMBERS.setdefault('T3', {})[n] = {'fss3': [m3, lo, hi], **cat, 'mean_ratio': float(pm.mean() / max(o.mean(), 1e-12))}
-    df = pd.DataFrame(rows, columns=['Model', 'FSS 1×1', 'FSS 3×3 [95% CI]', 'FSS 5×5', 'CSI', 'POD',
-                                     'Success ratio', 'F1', 'Frequency bias', 'Mean ratio'])
+    df = pd.DataFrame(rows, columns=['Model', 'FSS 1×1', 'FSS 3×3 [95% CI]', 'FSS 5×5', 'U-Net gain (FSS 3×3) [95% CI]',
+                                     'CSI', 'POD', 'Success ratio', 'F1', 'Frequency bias', 'Mean ratio'])
     write_table('T3_scores', df,
                 f"Scores on the test years {', '.join(map(str, c['te_years']))} for ≥ 1 stroke per {D.agg} h. "
                 "Baselines are calibrated with the same quantile mapping as the U-Net; persistence uses the observed "
                 f"lightning of the previous window. Event rate observed: {(c['obs'] >= THR).mean():.3f}. "
-                "Mean ratio: mean predicted / mean observed strokes.", col_format='lccccccccc')
+                "U-Net gain: FSS of the U-Net minus FSS of the model, computed window by window (paired), with its "
+                "95 % block-bootstrap interval. Mean ratio: mean predicted / mean observed strokes.",
+                col_format='l' + 'c' * 10)
 
 
 def T4_bias(D):
@@ -1395,8 +1499,8 @@ def T4_bias(D):
         raise Missing('land–sea mask')
     obs = c['to_density'](c['obs'].mean(0))
     regions = {'Whole domain': np.ones_like(obs, bool), 'Land': c['lsm'] >= LAND_LSM, 'Sea': c['lsm'] < LAND_LSM}
-    models = {'U-Net': c['M']['U-Net'], 'U-Net (raw)': c['M'].get('U-Net (raw)')}
-    models.update({k + ' (fitted constant)' if k == 'CAPE × P' else k: v for k, v in c['RAW'].items()})
+    models = {'U-Net (Poisson rate)': c['RAW']['U-Net'], 'U-Net (calibrated)': c['M']['U-Net']}
+    models.update({k + ' (fitted constant)' if k == 'CAPE × P' else k: v for k, v in c['RAW'].items() if k != 'U-Net'})
     rows = []
     for rname, rm in regions.items():
         o = obs[rm].mean()
@@ -1410,7 +1514,8 @@ def T4_bias(D):
     cols = ['Region', 'Observed'] + [n for n, m in models.items() if m is not None]
     write_table('T4_bias_land_sea', pd.DataFrame(rows, columns=cols),
                 "Mean bias (model − observed) in strokes km⁻² yr⁻¹ (Oct–Dec rate) on the test years, with the relative "
-                f"bias in brackets. Land: lsm ≥ {LAND_LSM}.")
+                f"bias in brackets. Land: lsm ≥ {LAND_LSM}. The Poisson rate (expected strokes) is the U-Net output "
+                "for amounts; the calibrated output sets most weak values to zero and is meant for event scores.")
 
 
 def T5_ildn(D):
@@ -1425,7 +1530,8 @@ def T5_ildn(D):
     write_table('T5_ildn_scores', pd.DataFrame(rows, columns=['Score against ILDN'] + order),
                 f"Scores against ILDN in the box {ILDN_BOX[0]}–{ILDN_BOX[1]}°N, {ILDN_BOX[2]}–{ILDN_BOX[3]}°E, "
                 f"Oct–Dec {', '.join(map(str, r['years']))} ({s['_ildn']['strokes_in_box']:,} ILDN strokes). WWLLN is "
-                "the reference: the model was trained to reproduce it.", col_format='l' + 'c' * len(order))
+                "the reference: the model was trained to reproduce it. U-Net: expected strokes (Poisson rate before "
+                "calibration).", col_format='l' + 'c' * len(order))
 
 
 # ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -1437,7 +1543,7 @@ def A1_monthly(D):
     lats, lons = c['lats'], c['lons']
     ext = [lons.min() - 0.125, lons.max() + 0.125, lats.min() - 0.125, lats.max() + 0.125]
     fig, axs = map_axes(len(months), 2, W2, extra_h=0.3, hspace=0.12, extent=ext)
-    pairs = {m: (c['to_density'](c['obs'][c['months'] == m].mean(0)), c['to_density'](c['M']['U-Net'][c['months'] == m].mean(0)))
+    pairs = {m: (c['to_density'](c['obs'][c['months'] == m].mean(0)), c['to_density'](c['RAW']['U-Net'][c['months'] == m].mean(0)))
              for m in months}
     pos = np.concatenate([v[v > 0] for pr in pairs.values() for v in pr])
     norm = mcolors.LogNorm(vmin=max(np.percentile(pos, 2), 1e-3), vmax=np.percentile(pos, 99.5))
@@ -1446,7 +1552,8 @@ def A1_monthly(D):
             im = draw_map(axs[r, j], c, np.where(f > 0, f, np.nan), LTG_CMAP, norm, ticks=(r == len(months) - 1, j == 0))
             axs[r, j].set_title(f"{pd.Timestamp(2000, m, 1):%B}, {lab}", fontsize=7, loc='left', pad=2)
     colorbar(fig, im, axs, 'strokes km$^{-2}$ yr$^{-1}$', extend='both', shrink=0.7)
-    save(fig, 'A1_monthly_maps', "Observed (left) and U-Net (right) mean stroke density for each month of the test years.")
+    save(fig, 'A1_monthly_maps', "Observed (left) and U-Net (right; expected strokes = Poisson rate) mean stroke "
+                                 "density for each month of the test years.")
 
 
 def A2_correlations(D):
@@ -1489,18 +1596,27 @@ def A2_correlations(D):
 
 def A3_all_pixels(D):
     c = D.core()
-    o, p = np.log1p(c['obs'].ravel()), np.log1p(c['M']['U-Net'].ravel())
-    fig, ax = plt.subplots(figsize=(W1, W1 * 0.9))
-    hb = ax.hexbin(o, p, gridsize=50, bins='log', cmap='viridis', mincnt=1)
-    hi = max(o.max(), p.max()) * 1.05
-    ax.plot([0, hi], [0, hi], 'k--', lw=0.8)
+    o = np.log1p(c['obs'].ravel())
+    versions = [('expected strokes (Poisson rate)', np.log1p(c['RAW']['U-Net'].ravel())),
+                ('calibrated', np.log1p(c['M']['U-Net'].ravel()))]
+    hi = max(o.max(), *(p.max() for _, p in versions)) * 1.05
     ticks = [t for t in [0, 1, 10, 100, 1000, 10000] if np.log1p(t) <= hi]
-    ax.set_xticks(np.log1p(ticks)); ax.set_xticklabels(ticks); ax.set_yticks(np.log1p(ticks)); ax.set_yticklabels(ticks)
-    ax.set_xlabel(f'observed strokes per cell per {D.agg} h'); ax.set_ylabel(f'U-Net strokes per cell per {D.agg} h')
-    colorbar(fig, hb, ax, 'number of cell-windows (log)')
-    r2 = 1 - np.sum((p - o) ** 2) / np.sum((o - o.mean()) ** 2)
-    save(fig, 'A3_all_pixels', f"Observed against U-Net strokes for every cell and test window (log(1 + x) axes). "
-                               f"R² of log(1 + strokes) = {fmt(r2)}.")
+    fig, axs = plt.subplots(1, 2, figsize=(W2 * 0.85, W1 * 0.9), sharey=True)
+    r2s = {}
+    for k, (ax, (lab, p)) in enumerate(zip(axs, versions)):
+        hb = ax.hexbin(o, p, gridsize=50, bins='log', cmap='viridis', mincnt=1, extent=(0, hi, 0, hi), vmin=1, vmax=o.size)
+        ax.plot([0, hi], [0, hi], 'k--', lw=0.8)
+        ax.set_xticks(np.log1p(ticks)); ax.set_xticklabels(ticks); ax.set_yticks(np.log1p(ticks)); ax.set_yticklabels(ticks)
+        ax.set_xlabel(f'observed strokes per cell per {D.agg} h')
+        r2s[lab] = 1 - np.sum((p - o) ** 2) / np.sum((o - o.mean()) ** 2)
+        ax.set_title(f'U-Net, {lab}\nR² of log(1 + strokes) = {fmt(r2s[lab])}', fontsize=7, loc='left')
+        letter(ax, 'ab'[k])
+    axs[0].set_ylabel(f'U-Net strokes per cell per {D.agg} h')
+    colorbar(fig, hb, axs, 'number of cell-windows (log)')
+    save(fig, 'A3_all_pixels', "Observed against U-Net strokes for every cell and test window (log(1 + x) axes). "
+                               "(a) Expected strokes (Poisson rate): smooth, it never predicts exactly zero. (b) After "
+                               "quantile mapping: most weak values become 0 and the rest cluster near whole numbers "
+                               "(horizontal lines), because the observed values it is mapped onto are whole counts.")
 
 
 def A4_training(D):
