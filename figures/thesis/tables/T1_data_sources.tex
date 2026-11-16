@@ -1,0 +1,24 @@
+% made by thesis_figures.py — \input{tables/T1_data_sources} in the thesis
+\providecommand{\toprule}{\hline}\providecommand{\midrule}{\hline}\providecommand{\bottomrule}{\hline}  % \usepackage{booktabs} gives nicer lines
+\begin{table}[ht]
+\centering
+\small
+\caption{Data used in this study. All inputs are averaged over 12-h windows on the 0.25\textdegree{} ERA5 grid; IMERG precipitation is regridded to that grid.}
+\label{tab:T1_data_sources}
+\resizebox{\textwidth}{!}{\begin{tabular}{lcccc}
+\toprule
+Variable & Source & Units & Native resolution & Log-transformed \\
+\midrule
+Precipitation (IMERG) & IMERG (NASA GPM) & mm h$^{-1}$ & 0.1\textdegree{}, 30 min & yes \\
+Total Totals index & ERA5 & K & 0.25\textdegree{}, 1 h & no \\
+Cloud ice at 500 hPa & ERA5 & kg kg$^{-1}$ & 0.25\textdegree{}, 1 h & yes \\
+Total column cloud ice & ERA5 & kg m$^{-2}$ & 0.25\textdegree{}, 1 h & yes \\
+CAPE & ERA5 & J kg$^{-1}$ & 0.25\textdegree{}, 1 h & yes \\
+K index & ERA5 & K & 0.25\textdegree{}, 1 h & no \\
+Total column cloud liquid & ERA5 & kg m$^{-2}$ & 0.25\textdegree{}, 1 h & yes \\
+Land–sea mask & ERA5 & 0–1 & 0.25\textdegree{} & no \\
+Lightning strokes (target) & WWLLN & strokes per cell per 12 h & stroke locations & – \\
+Lightning strokes (independent check) & ILDN & strokes & stroke locations & – \\
+\bottomrule
+\end{tabular}}
+\end{table}

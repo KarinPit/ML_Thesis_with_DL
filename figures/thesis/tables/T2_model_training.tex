@@ -1,0 +1,25 @@
+% made by thesis_figures.py — \input{tables/T2_model_training} in the thesis
+\providecommand{\toprule}{\hline}\providecommand{\midrule}{\hline}\providecommand{\bottomrule}{\hline}  % \usepackage{booktabs} gives nicer lines
+\begin{table}[ht]
+\centering
+\small
+\caption{Model and training settings.}
+\label{tab:T2_model_training}
+\begin{tabular}{lp{0.62\textwidth}}
+\toprule
+Setting & Value \\
+\midrule
+Architecture & U-Net-style encoder–decoder without skip connections (Jones et al. 2026) \\
+Channels & encoder 32, 16; centre 8; decoder 16, 32; 1 $\times$ 1 output \\
+Parameters & 22,329 \\
+Inputs & 8 fields, 12-h means, standardised per month \\
+Loss & Poisson NLL on raw strokes (predicts mean) \\
+Optimiser & Adam, learning rate 0.001, gradient clipping 1.0 \\
+Batch size / max. epochs & 16 / 100 \\
+Early stopping & patience 10 epochs on validation loss; best epoch 36 of 46 \\
+Random seed & 13 \\
+Calibration & quantile mapping fitted on 2021 \\
+Training / validation / test years & 2013–2020 / 2021 / 2022, 2024 \\
+\bottomrule
+\end{tabular}
+\end{table}

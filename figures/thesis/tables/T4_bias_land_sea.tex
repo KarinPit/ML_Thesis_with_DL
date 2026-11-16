@@ -1,0 +1,17 @@
+% made by thesis_figures.py — \input{tables/T4_bias_land_sea} in the thesis
+\providecommand{\toprule}{\hline}\providecommand{\midrule}{\hline}\providecommand{\bottomrule}{\hline}  % \usepackage{booktabs} gives nicer lines
+\begin{table}[ht]
+\centering
+\small
+\caption{Mean bias (model $-$ observed) in strokes km$^{-2}$ yr$^{-1}$ (Oct–Dec rate) on the test years, with the relative bias in brackets. Land: lsm $\geq$ 0.5.}
+\label{tab:T4_bias_land_sea}
+\resizebox{\textwidth}{!}{\begin{tabular}{lccccc}
+\toprule
+Region & Observed & U-Net & U-Net (raw) & Climatology & CAPE $\times$ P (fitted constant) \\
+\midrule
+Whole domain & 1.55 & -0.0918 (-6\%) & -0.0518 (-3\%) & +0.384 (+25\%) & -0.266 (-17\%) \\
+Land & 0.487 & -0.18 (-37\%) & +0.0141 (+3\%) & +0.162 (+33\%) & +0.00295 (+1\%) \\
+Sea & 2.45 & -0.018 (-1\%) & -0.107 (-4\%) & +0.57 (+23\%) & -0.491 (-20\%) \\
+\bottomrule
+\end{tabular}}
+\end{table}

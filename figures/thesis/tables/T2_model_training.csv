@@ -1,0 +1,12 @@
+Setting,Value
+Architecture,U-Net-style encoder–decoder without skip connections (Jones et al. 2026)
+Channels,"encoder 32, 16; centre 8; decoder 16, 32; 1 × 1 output"
+Parameters,"22,329"
+Inputs,"8 fields, 12-h means, standardised per month"
+Loss,Poisson NLL on raw strokes (predicts mean)
+Optimiser,"Adam, learning rate 0.001, gradient clipping 1.0"
+Batch size / max. epochs,16 / 100
+Early stopping,patience 10 epochs on validation loss; best epoch 36 of 46
+Random seed,13
+Calibration,quantile mapping fitted on 2021
+Training / validation / test years,"2013–2020 / 2021 / 2022, 2024"

@@ -1,0 +1,19 @@
+% made by thesis_figures.py — \input{tables/T3_scores} in the thesis
+\providecommand{\toprule}{\hline}\providecommand{\midrule}{\hline}\providecommand{\bottomrule}{\hline}  % \usepackage{booktabs} gives nicer lines
+\begin{table}[ht]
+\centering
+\small
+\caption{Scores on the test years 2022, 2024 for $\geq$ 1 stroke per 12 h. Baselines are calibrated with the same quantile mapping as the U-Net; persistence uses the observed lightning of the previous window. Event rate observed: 0.044. Mean ratio: mean predicted / mean observed strokes.}
+\label{tab:T3_scores}
+\resizebox{\textwidth}{!}{\begin{tabular}{lccccccccc}
+\toprule
+Model & FSS 1$\times$1 & FSS 3$\times$3 [95\% CI] & FSS 5$\times$5 & CSI & POD & Success ratio & F1 & Frequency bias & Mean ratio \\
+\midrule
+U-Net & 0.48 & 0.61 [0.54, 0.67] & 0.65 & 0.45 & 0.60 & 0.65 & 0.62 & 0.92 & 0.94 \\
+U-Net (raw) & 0.46 & 0.56 [0.51, 0.60] & 0.59 & 0.39 & 0.87 & 0.41 & 0.56 & 2.10 & 0.96 \\
+CAPE $\times$ P & 0.40 & 0.53 [0.47, 0.58] & 0.57 & 0.36 & 0.49 & 0.57 & 0.53 & 0.86 & 0.94 \\
+Climatology & 0.08 & 0.11 [0.08, 0.15] & 0.13 & 0.06 & 0.13 & 0.10 & 0.12 & 1.32 & 1.41 \\
+Persistence & 0.26 & 0.37 [0.32, 0.42] & 0.41 & 0.22 & 0.35 & 0.35 & 0.35 & 1.00 & 1.00 \\
+\bottomrule
+\end{tabular}}
+\end{table}

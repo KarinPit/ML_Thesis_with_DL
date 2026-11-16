@@ -1,0 +1,11 @@
+Variable,Source,Units,Native resolution,Log-transformed
+Precipitation (IMERG),IMERG (NASA GPM),mm h⁻¹,"0.1°, 30 min",yes
+Total Totals index,ERA5,K,"0.25°, 1 h",no
+Cloud ice at 500 hPa,ERA5,kg kg⁻¹,"0.25°, 1 h",yes
+Total column cloud ice,ERA5,kg m⁻²,"0.25°, 1 h",yes
+CAPE,ERA5,J kg⁻¹,"0.25°, 1 h",yes
+K index,ERA5,K,"0.25°, 1 h",no
+Total column cloud liquid,ERA5,kg m⁻²,"0.25°, 1 h",yes
+Land–sea mask,ERA5,0–1,0.25°,no
+Lightning strokes (target),WWLLN,strokes per cell per 12 h,stroke locations,–
+Lightning strokes (independent check),ILDN,strokes,stroke locations,–
