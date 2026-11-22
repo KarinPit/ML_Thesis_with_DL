@@ -1,0 +1,211 @@
+% =====================================================================
+% Thesis references - Karin
+% All DOIs checked against Crossref / publisher pages (Nov 2026),
+% except where marked CHECK.
+% =====================================================================
+
+% ---------------------------------------------------------------------
+% PART 1 - Papers Karin selected
+% ---------------------------------------------------------------------
+
+% Closest new work: U-Net on ERA5 over Europe, ATDnet lightning,
+% weighted BCE + Platt scaling, LR/GAM/XGBoost/MLP baselines.
+% Still a preprint in open discussion - cite as preprint.
+@article{burq2026lightning,
+  author  = {Burq, Adrien and Jouhaud, Jean and Xing, Victor and Bouvier, Victor and Forcadell, Vincent and Taszarek, Mateusz and Vrac, Mathieu and Faranda, Davide},
+  title   = {From logistic regression to deep learning: machine learning modeling of lightning in {ERA5} reanalysis data},
+  journal = {EGUsphere [preprint]},
+  year    = {2026},
+  doi     = {10.5194/egusphere-2026-4363}
+}
+
+% The paper the thesis replicates and extends.
+% CHECK: take the volume number from the first page of the PDF
+% (2026 JGR: Atmospheres should be volume 131; issue 15 per CiteDrive).
+@article{jones2026deep,
+  author  = {Jones, Randall and Thornton, Joel A. and Wright, Chris J. and Holzworth, Robert A.},
+  title   = {A Deep Learning Model of Lightning Stroke Density},
+  journal = {Journal of Geophysical Research: Atmospheres},
+  year    = {2026},
+  volume  = {131},
+  number  = {15},
+  pages   = {e2025JD045453},
+  doi     = {10.1029/2025JD045453}
+}
+
+% PhD thesis (Univ. of Washington, WWLLN group). Its ML work was
+% published as cheng2024machine below - cite both or prefer the paper.
+@phdthesis{cheng2021lightning,
+  author  = {Cheng, Wei-Yi},
+  title   = {Lightning Parameterization and Prediction: Conventional and Data-Driven Approaches},
+  school  = {University of Washington},
+  address = {Seattle, WA},
+  year    = {2021},
+  url     = {http://hdl.handle.net/1773/47325}
+}
+
+% Lightning counts treated as count data (hurdle: Bernoulli +
+% zero-truncated negative binomial). Main support for the Poisson loss.
+@article{simon2019nwp,
+  author  = {Simon, Thorsten and Mayr, Georg J. and Umlauf, Nikolaus and Zeileis, Achim},
+  title   = {{NWP}-based lightning prediction using flexible count data regression},
+  journal = {Advances in Statistical Climatology, Meteorology and Oceanography},
+  year    = {2019},
+  volume  = {5},
+  number  = {1},
+  pages   = {1--16},
+  doi     = {10.5194/ascmo-5-1-2019}
+}
+
+% U-Net for lightning (satellite nowcasting); reliability diagrams.
+@article{cintineo2022probsevere,
+  author  = {Cintineo, John L. and Pavolonis, Michael J. and Sieglaff, Justin M.},
+  title   = {{ProbSevere LightningCast}: A Deep-Learning Model for Satellite-Based Lightning Nowcasting},
+  journal = {Weather and Forecasting},
+  year    = {2022},
+  volume  = {37},
+  number  = {7},
+  pages   = {1239--1257},
+  doi     = {10.1175/WAF-D-22-0019.1}
+}
+
+% Best-practice tutorial. Cite the published WAF version, not arXiv.
+@article{chase2023machine,
+  author  = {Chase, Randy J. and Harrison, David R. and Lackmann, Gary M. and McGovern, Amy},
+  title   = {A Machine Learning Tutorial for Operational Meteorology. {Part II}: Neural Networks and Deep Learning},
+  journal = {Weather and Forecasting},
+  year    = {2023},
+  volume  = {38},
+  number  = {8},
+  pages   = {1271--1293},
+  doi     = {10.1175/WAF-D-22-0187.1}
+}
+
+% Mediterranean, CNN, likelihood-based loss (Bernoulli + GPD - NOT
+% Poisson). Published version of arXiv:2212.01796.
+@article{richards2023insights,
+  author  = {Richards, Jordan and Huser, Rapha{\"e}l and Bevacqua, Emanuele and Zscheischler, Jakob},
+  title   = {Insights into the Drivers and Spatiotemporal Trends of Extreme {Mediterranean} Wildfires with Statistical Deep Learning},
+  journal = {Artificial Intelligence for the Earth Systems},
+  year    = {2023},
+  volume  = {2},
+  number  = {4},
+  doi     = {10.1175/AIES-D-22-0095.1}
+}
+
+% ML lightning forecasts compared against several baselines.
+@article{sobash2025evaluating,
+  author  = {Sobash, Ryan A. and Ahijevych, David A.},
+  title   = {Evaluating Machine Learning--Based Probabilistic Lightning Forecasts Using the {HRRR}: A Comparison to Three Forecast Baselines},
+  journal = {Weather and Forecasting},
+  year    = {2025},
+  volume  = {40},
+  number  = {5},
+  pages   = {759--774},
+  doi     = {10.1175/WAF-D-24-0140.1}
+}
+
+% Neural network trained with a Poisson loss on count data (genomics).
+@article{montesinoslopez2021poisson,
+  author  = {Montesinos-L{\'o}pez, Osval A. and Montesinos-L{\'o}pez, J. C. and Salazar, E. and Barr{\'o}n, J. A. and Montesinos-L{\'o}pez, A. and Buenrostro-Mariscal, R. and Crossa, J.},
+  title   = {Application of a {Poisson} deep neural network model for the prediction of count data in genome-based prediction},
+  journal = {The Plant Genome},
+  year    = {2021},
+  volume  = {14},
+  number  = {3},
+  pages   = {e20118},
+  doi     = {10.1002/tpg2.20118}
+}
+
+% ---------------------------------------------------------------------
+% PART 2 - Recommended additions (methods/data you already use)
+% ---------------------------------------------------------------------
+
+@article{cheng2024machine,
+  author  = {Cheng, Wei-Yi and Kim, Daehyun and Henderson, Scott and Ham, Yoo-Geun and Kim, Jeong-Hwan and Holzworth, Robert H.},
+  title   = {Machine Learning--Based Lightning Parameterizations for the {CONUS}},
+  journal = {Artificial Intelligence for the Earth Systems},
+  year    = {2024},
+  volume  = {3},
+  number  = {2},
+  doi     = {10.1175/AIES-D-23-0024.1}
+}
+
+@inproceedings{ronneberger2015unet,
+  author    = {Ronneberger, Olaf and Fischer, Philipp and Brox, Thomas},
+  title     = {{U-Net}: Convolutional Networks for Biomedical Image Segmentation},
+  booktitle = {Medical Image Computing and Computer-Assisted Intervention -- MICCAI 2015},
+  series    = {Lecture Notes in Computer Science},
+  publisher = {Springer},
+  address   = {Cham},
+  year      = {2015},
+  pages     = {234--241},
+  doi       = {10.1007/978-3-319-24574-4_28}
+}
+
+@article{roberts2008scale,
+  author  = {Roberts, Nigel M. and Lean, Humphrey W.},
+  title   = {Scale-Selective Verification of Rainfall Accumulations from High-Resolution Forecasts of Convective Events},
+  journal = {Monthly Weather Review},
+  year    = {2008},
+  volume  = {136},
+  number  = {1},
+  pages   = {78--97},
+  doi     = {10.1175/2007MWR2123.1}
+}
+
+@article{romps2014projected,
+  author  = {Romps, David M. and Seeley, Jacob T. and Vollaro, David and Molinari, John},
+  title   = {Projected increase in lightning strikes in the {United States} due to global warming},
+  journal = {Science},
+  year    = {2014},
+  volume  = {346},
+  number  = {6211},
+  pages   = {851--854},
+  doi     = {10.1126/science.1259100}
+}
+
+@article{hersbach2020era5,
+  author  = {Hersbach, Hans and Bell, Bill and Berrisford, Paul and others},
+  title   = {The {ERA5} global reanalysis},
+  journal = {Quarterly Journal of the Royal Meteorological Society},
+  year    = {2020},
+  volume  = {146},
+  number  = {730},
+  pages   = {1999--2049},
+  doi     = {10.1002/qj.3803}
+}
+
+@article{hutchins2012relative,
+  author  = {Hutchins, M. L. and Holzworth, R. H. and Brundell, J. B. and Rodger, C. J.},
+  title   = {Relative detection efficiency of the {World Wide Lightning Location Network}},
+  journal = {Radio Science},
+  year    = {2012},
+  volume  = {47},
+  number  = {6},
+  pages   = {RS6005},
+  doi     = {10.1029/2012RS005049}
+}
+
+% Eastern Mediterranean lightning (both co-authored by Yoav Yair)
+@article{altaratz2003lightning,
+  author  = {Altaratz, O. and Levin, Z. and Yair, Y. and Ziv, B.},
+  title   = {Lightning Activity over Land and Sea on the Eastern Coast of the {Mediterranean}},
+  journal = {Monthly Weather Review},
+  year    = {2003},
+  volume  = {131},
+  number  = {9},
+  pages   = {2060--2070},
+  doi     = {10.1175/1520-0493(2003)131<2060:LAOLAS>2.0.CO;2}
+}
+
+@article{shalev2011spatio,
+  author  = {Shalev, S. and Saaroni, H. and Izsak, T. and Yair, Y. and Ziv, B.},
+  title   = {The spatio-temporal distribution of lightning over {Israel} and the neighboring area and its relation to regional synoptic systems},
+  journal = {Natural Hazards and Earth System Sciences},
+  year    = {2011},
+  volume  = {11},
+  number  = {8},
+  pages   = {2125--2135},
+  doi     = {10.5194/nhess-11-2125-2011}
+}
