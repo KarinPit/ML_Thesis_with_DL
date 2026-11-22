@@ -12,7 +12,8 @@ train_unet.py writes its predictions when EXTRA_PRED_YEARS = [2023]). 2025 has n
 
 Usage (on EC2, from the repo folder, after train_unet.py):
     python ildn_eval.py                                   # the run currently set in train_unet.py
-    python ildn_eval.py unet_12h_poisson_OND_predictions.nc
+    python ildn_eval.py unet_12h_poisson_OND_predictions.nc   # the Oct–Dec run
+Only months that have ILDN data are compared (a year-month without a single ILDN stroke counts as missing).
 
 Needs the ILDN files in the data folder:   data/<year>_for_yoav_including_cloud.txt
 Outputs: figures/<run folder>/ildn/  (same run folder as jones_figures.py) — figures + ildn_summary.json
@@ -31,7 +32,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-from run_info import default_pred_file, run_folder, run_label, _load
+import re
+from run_info import default_pred_file, run_folder, run_label, _load, season_name
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 DATA_DIR   = '/home/ec2-user/ML_Thesis_with_DL/data'
@@ -59,7 +61,7 @@ PRED_FILE = args[0] if args else default_pred_file()
 PRED_PATH = PRED_FILE if os.path.isabs(PRED_FILE) else os.path.join(DATA_DIR, PRED_FILE)
 if not os.path.exists(PRED_PATH):
     sys.exit(f"{PRED_PATH} not found — run train_unet.py first (or pass a predictions file)")
-EXTRA_PATH = PRED_PATH.replace('_OND_predictions.nc', '_OND_predictions_extra.nc')
+EXTRA_PATH = re.sub(r'_predictions\.nc$', '_predictions_extra.nc', PRED_PATH)
 
 pred_main = xr.open_dataset(PRED_PATH).load()
 A = {k: _load(v) for k, v in pred_main.attrs.items()}
@@ -108,6 +110,7 @@ ildn = pd.concat([read_ildn(f) for f in files], ignore_index=True)
 ildn['t'] = ildn['t'] - pd.Timedelta(hours=ILDN_TIME_OFFSET_H)
 n_all = len(ildn)
 ildn = ildn[ildn.t.dt.month.isin(MONTHS)]
+covered = set(zip(ildn.t.dt.year, ildn.t.dt.month))   # (year, month) with ILDN data (before the type filters)
 if ILDN_TYPES == 'CG':
     ildn = ildn[ildn['type'] == 'G']
 elif ILDN_TYPES == 'IC':
@@ -125,7 +128,9 @@ for y in ildn_years:
 if not YEARS:
     sys.exit("No year has both ILDN data and model predictions.")
 _pt = pd.DatetimeIndex(pred.time.values)
-pred = pred.sel(time=_pt.year.isin(YEARS) & _pt.month.isin(MONTHS))
+pred = pred.sel(time=np.array([(y, m) in covered for y, m in zip(_pt.year, _pt.month)]))
+for y in YEARS:
+    print(f"  {y}: months with ILDN data {sorted(m for yy, m in covered if yy == y)}", flush=True)
 times = pd.DatetimeIndex(pred.time.values)
 
 # snap to the nearest grid point (same rule as process_wwln.py) and to the model's windows
@@ -156,7 +161,7 @@ print(f"Box lat {blat.min():.2f}–{blat.max():.2f}, lon {blon.min():.2f}–{blo
 
 # baselines from the aggregated cache (if it has the inputs): R14 = CAPE × precipitation (scale-free
 # scores don't need its constant) and the training-years monthly climatology of WWLLN
-PREP_PATH = os.path.join(DATA_DIR, f'jones_israel_{AGG}h_OND.nc')
+PREP_PATH = os.path.join(DATA_DIR, f'jones_israel_{AGG}h_{season_name(MONTHS)}.nc')
 lsm_box = None
 if os.path.exists(PREP_PATH):
     cache = xr.open_dataset(PREP_PATH)
@@ -177,7 +182,9 @@ if os.path.exists(PREP_PATH):
     if isinstance(tr_years, list) and 'ltg' in cbox:
         ltr = cbox['ltg'].sel(time=cbox.time.dt.year.isin(tr_years)).fillna(0)
         clim = ltr.groupby('time.month').mean('time')
-        fields['Climatology'] = np.stack([clim.sel(month=m).values for m in times.month]).astype('float32')
+        allm = ltr.mean('time').values                       # for a month without training windows
+        fields['Climatology'] = np.stack([clim.sel(month=m).values if m in clim.month.values else allm
+                                          for m in times.month]).astype('float32')
 else:
     print(f"  {PREP_PATH} not found — R14 and climatology baselines skipped", flush=True)
 
@@ -312,7 +319,9 @@ for ax, k in zip(np.atleast_1d(axs), map_names):
     im = draw(ax, rel[k], norm1, f'{k}{sub}')
 cb = fig.colorbar(im, ax=axs, shrink=0.85, extend='both')
 cb.set_label('mean ÷ box mean (1 = average)', color=INK2, fontsize=9)
-fig.suptitle(f'Where: mean lightning, Oct–Dec {ylab} — {RUN_LABEL}', color=INK, fontsize=11)
+_ab = lambda m: pd.Timestamp(2000, m, 1).strftime('%b')
+_mlab = f"{_ab(min(MONTHS))}–{_ab(max(MONTHS))}" if len(MONTHS) > 1 else _ab(MONTHS[0])
+fig.suptitle(f'Where: mean lightning, {_mlab} {ylab} — {RUN_LABEL}', color=INK, fontsize=11)
 stamp(fig)
 fig.savefig(os.path.join(OUT_DIR, 'ildn1_mean_maps.png'), dpi=150, bbox_inches='tight'); plt.close(fig)
 

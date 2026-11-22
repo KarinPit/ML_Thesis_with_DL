@@ -15,13 +15,16 @@ import ast
 import hashlib
 import json
 import os
+import re
 
 HERE         = os.path.dirname(os.path.abspath(__file__))
 TRAIN_SCRIPT = os.path.join(HERE, 'train_unet.py')
 
 
-def read_train_config(path=TRAIN_SCRIPT):
-    """Top-level settings of train_unet.py (plain values and f-strings), read without running it."""
+def read_train_config(path=TRAIN_SCRIPT, overrides=None):
+    """Top-level settings of train_unet.py (plain values and f-strings), read without running it.
+    `overrides` replaces settings the way train_unet.py's command-line options do (e.g. ACTIVE_MONTHS)."""
+    overrides = overrides or {}
     if not os.path.exists(path):
         return {}
     src = open(path).read()
@@ -39,6 +42,9 @@ def read_train_config(path=TRAIN_SCRIPT):
             for t, v in pairs:
                 if not isinstance(t, ast.Name):
                     continue
+                if t.id in overrides:
+                    cfg[t.id] = overrides[t.id]
+                    continue
                 try:
                     cfg[t.id] = ast.literal_eval(v)
                 except Exception:
@@ -49,9 +55,17 @@ def read_train_config(path=TRAIN_SCRIPT):
     return cfg
 
 
-def default_pred_file(path=TRAIN_SCRIPT):
-    """Predictions file of the configuration currently set in train_unet.py (None if unknown)."""
-    return read_train_config(path).get('OUT_PATH')
+def default_pred_file(path=TRAIN_SCRIPT, months=None):
+    """Predictions file of the configuration currently set in train_unet.py (None if unknown);
+    months = e.g. [10, 11, 12] for the run of those months."""
+    return read_train_config(path, {'ACTIVE_MONTHS': sorted(set(months))} if months else None).get('OUT_PATH')
+
+
+def season_name(months):
+    """Same rule as SEASON in train_unet.py: 'OND' (Oct–Dec), 'ALL' (whole year), else e.g. 'M060708'."""
+    ms = sorted(set(months))
+    return ('OND' if ms == [10, 11, 12] else 'ALL' if ms == list(range(1, 13))
+            else 'M' + ''.join(f'{m:02d}' for m in ms))
 
 
 def _load(v):
@@ -102,7 +116,7 @@ def run_name(attrs, pred_path):
     """e.g. '12h_mse_jonesnorm' — from the file attributes, else from the file name."""
     if 'run_name' in attrs:
         return str(attrs['run_name'])
-    stem = os.path.basename(pred_path).replace('_OND_predictions.nc', '').replace('.nc', '')
+    stem = re.sub(r'_(OND|ALL|M\d+)_predictions\.nc$', '', os.path.basename(pred_path)).replace('.nc', '')
     return stem[5:] if stem.startswith('unet_') else stem
 
 

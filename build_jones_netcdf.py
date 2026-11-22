@@ -9,6 +9,10 @@ Usage:
     python build_jones_netcdf.py --years 2025 --overwrite  # rebuild a year (e.g. after re-downloading IMERG)
     python build_jones_netcdf.py --allow-gaps              # keep years with missing IMERG hours (as NaN)
 
+Works on any set of months: whatever the downloaded files cover (Sep–Dec, or the whole year after
+download_jones_era5.py / download_imerg.py --months ...). Files are read lazily, month-sized pieces at a
+time, so a whole year fits in a few GB of memory; output files are compressed (zlib level 1).
+
 Missing data stays NaN; it is never filled with 0 (a missing hour of rain or lightning is not
 "no rain" / "no lightning"). A year whose IMERG file does not cover every hour is skipped with
 an error, unless --allow-gaps is given.
@@ -32,9 +36,25 @@ To load all years lazily during training:
 
 import os
 import argparse
+import warnings
 import numpy as np
 import pandas as pd
 import xarray as xr
+import dask.array as darr
+
+CHUNK = 24 * 7                        # hours per piece read/written at a time (one week)
+warnings.filterwarnings('ignore', message='The specified chunks separate the stored chunks')   # only slower, not wrong
+COMPRESS = {'zlib': True, 'complevel': 1}
+
+
+def encoding_for(ds):
+    """zlib level 1 for every variable, stored in day-long chunks (fast to read a few days or a month)."""
+    enc = {}
+    for v in ds.data_vars:
+        shape = ds[v].shape
+        chunks = tuple(min(24, n) if d == 'time' else n for d, n in zip(ds[v].dims, shape))
+        enc[v] = dict(COMPRESS, chunksizes=chunks) if all(chunks) else dict(COMPRESS)
+    return enc
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 DATA_DIR = 'data'
@@ -69,17 +89,24 @@ def build_year(year: int, allow_gaps: bool = False) -> xr.Dataset:
     print(f"{'='*50}")
 
     # ── Load datasets ──────────────────────────────────────────────────────────
-    ds_jones_s = xr.open_dataset(jones_single_path)
-    ds_jones_p = xr.open_dataset(jones_pressure_path)
-    ds_imerg   = xr.open_dataset(imerg_path)
-    ds_light   = xr.open_dataset(lightning_path) if lightning_available else None
+    # lazily: nothing is read until the year file is written (a whole year does not fit in memory at once)
+    ds_jones_s = xr.open_dataset(jones_single_path, chunks={'time': CHUNK})
+    ds_jones_p = xr.open_dataset(jones_pressure_path, chunks={'time': CHUNK})
+    ds_imerg   = xr.open_dataset(imerg_path, chunks={'time': CHUNK})
+    ds_light   = xr.open_dataset(lightning_path, chunks={'time': CHUNK}) if lightning_available else None
+    sources = [d for d in (ds_jones_s, ds_jones_p, ds_imerg, ds_light) if d is not None]
 
     # ── Use Jones single-level grid as reference (ERA5 0.25°) ─────────────────
     times = ds_jones_s.time.values
     lats  = ds_jones_s.latitude.values  if 'latitude'  in ds_jones_s.coords else ds_jones_s.lat.values
     lons  = ds_jones_s.longitude.values if 'longitude' in ds_jones_s.coords else ds_jones_s.lon.values
 
-    print(f"  Grid: {len(times)} timesteps × {len(lats)} lat × {len(lons)} lon")
+    months = sorted(set(pd.DatetimeIndex(times).month))
+    print(f"  Grid: {len(times)} timesteps × {len(lats)} lat × {len(lons)} lon (months {months})")
+
+    def nan_field():
+        return darr.full((len(times), len(lats), len(lons)), np.nan, dtype='float32',
+                         chunks=(CHUNK, len(lats), len(lons)))
 
     def align(ds):
         """Reindex dataset to the reference time/lat/lon grid. Anything without a match stays
@@ -109,17 +136,17 @@ def build_year(year: int, allow_gaps: bool = False) -> xr.Dataset:
         """Get single-level variable by name or alt name."""
         for n in ([name] + ([alt] if alt else [])):
             if n in ds_jones_s:
-                return ds_jones_s[n].values.astype('float32')
+                return ds_jones_s[n].astype('float32').data
         print(f"    WARNING: {name} not found in single-level file — filling NaN")
-        return np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
+        return nan_field()
 
     def get_pl(name, level):
         """Get pressure-level variable at a specific hPa level."""
         level_dim = 'level' if 'level' in ds_jones_p.dims else 'pressure_level'
         if name in ds_jones_p:
-            return ds_jones_p[name].sel({level_dim: level}).values.astype('float32')
+            return ds_jones_p[name].sel({level_dim: level}).astype('float32').data
         print(f"    WARNING: {name}@{level}hPa not found — filling NaN")
-        return np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
+        return nan_field()
 
     level_dim = 'level' if 'level' in ds_jones_p.dims else 'pressure_level'
 
@@ -141,8 +168,8 @@ def build_year(year: int, allow_gaps: bool = False) -> xr.Dataset:
     # ── Derived (pre-computed in download script) ──────────────────────────────
     rh_var    = 'rh_avg'    if 'rh_avg'    in ds_jones_p else 'rh'
     shear_var = 'wind_shear' if 'wind_shear' in ds_jones_p else 'shear'
-    rh    = ds_jones_p[rh_var].values.astype('float32')    if rh_var    in ds_jones_p else np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
-    shear = ds_jones_p[shear_var].values.astype('float32') if shear_var in ds_jones_p else np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
+    rh    = ds_jones_p[rh_var].astype('float32').data    if rh_var    in ds_jones_p else nan_field()
+    shear = ds_jones_p[shear_var].astype('float32').data if shear_var in ds_jones_p else nan_field()
 
     # ── Pressure-level @ 500 & 1000 hPa ──────────────────────────────────────
     vv500   = get_pl('vertical_velocity',              500)
@@ -164,36 +191,41 @@ def build_year(year: int, allow_gaps: bool = False) -> xr.Dataset:
 
     # ── Precipitation (IMERG) ─────────────────────────────────────────────────
     precip_var = 'precipitation' if 'precipitation' in ds_imerg else list(ds_imerg.data_vars)[0]
-    precip = ds_imerg[precip_var].values.astype('float32')
+    precip = ds_imerg[precip_var].astype('float32').data
 
     # IMERG coverage check: every hour must be present. (Missing hours used to be filled with
     # 0 mm/h — that is how Oct–Dec 2025 ended up as "no rain".)
-    hour_missing = np.isnan(precip).all(axis=(1, 2))
+    hour_missing = darr.isnan(precip).all(axis=(1, 2)).compute()
     if hour_missing.any():
         by_month = pd.DatetimeIndex(times[hour_missing]).to_period('M').value_counts().sort_index()
         print(f"  WARNING {year}: IMERG is missing for {int(hour_missing.sum())} of {len(times)} hours:")
         for month, n in by_month.items():
             print(f"    {month}: {n} hours missing")
         if not allow_gaps:
-            print(f"  SKIP {year} — re-download IMERG first: "
-                  f"python download_imerg.py --years {year} --overwrite "
+            gap_months = sorted({p.month for p in by_month.index})
+            print(f"  SKIP {year} — download the missing IMERG months first: "
+                  f"python download_imerg.py --years {year} --months {' '.join(map(str, gap_months))} --overwrite "
                   f"(or rerun with --allow-gaps to keep the gaps as NaN)")
+            for d in sources:
+                d.close()
             return None
 
     # ── Target — lightning count ──────────────────────────────────────────────
     if ds_light is not None:
         ltg_var = 'lightning_count' if 'lightning_count' in ds_light else list(ds_light.data_vars)[0]
-        ltg = ds_light[ltg_var].values.astype('float32')
+        ltg = ds_light[ltg_var].astype('float32')
         if 'data_available' in ds_light:
-            no_data = ~(ds_light['data_available'].values == 1)   # also True for NaN (hour not in file)
-            ltg[no_data] = np.nan
-            if no_data.any():
-                print(f"  NOTE {year}: no WWLN data for {int(no_data.sum())} hours — ltg set to NaN there")
+            has_data = ds_light['data_available'] == 1             # False also for NaN (hour not in file)
+            ltg = ltg.where(has_data).transpose('time', 'lat', 'lon')
+            n_no = int((~has_data).sum()) if has_data.ndim == 1 else int((~has_data).all(['lat', 'lon']).sum())
+            if n_no:
+                print(f"  NOTE {year}: no WWLN data for {n_no} hours — ltg set to NaN there")
         else:
             print(f"  NOTE {year}: WWLN file has no 'data_available' flag, so days without a .loc file "
                   f"look like 'no lightning'. Re-run: python process_wwln.py --year {year}")
+        ltg = ltg.data
     else:
-        ltg = np.full((len(times), len(lats), len(lons)), np.nan, dtype='float32')
+        ltg = nan_field()
 
     # ── Build output dataset ───────────────────────────────────────────────────
     coords = {'time': times, 'lat': lats, 'lon': lons}
@@ -241,6 +273,7 @@ def build_year(year: int, allow_gaps: bool = False) -> xr.Dataset:
     }
 
     ds_year = xr.Dataset(data_vars, coords=coords)
+    ds_year.set_close(lambda: [d.close() for d in sources])     # ds_year.close() closes the source files
     print(f"  Variables: {list(ds_year.data_vars)}")
     return ds_year
 
@@ -289,9 +322,13 @@ for year in ALL_YEARS:
     ds.attrs['year']         = str(year)
     ds.attrs['missing_data'] = 'kept as NaN (never filled with 0)'
 
-    print(f"  Saving → {out_path} ...")
-    ds.to_netcdf(out_path)
-    ds.close()   # free memory before next year
+    ds.attrs['months']       = ' '.join(str(m) for m in sorted(set(ds.time.dt.month.values)))
+
+    print(f"  Saving → {out_path} (compressed) ...")
+    tmp = out_path + '.tmp'
+    ds.to_netcdf(tmp, encoding=encoding_for(ds))   # written to a temporary file first: an interrupted run
+    ds.close()                                     # never leaves a half-written year file behind
+    os.replace(tmp, out_path)
     saved.append(out_path)
     print(f"  Done {year}.")
 
@@ -307,12 +344,17 @@ print(f"  ds = xr.open_mfdataset('data/jones_israel_*.nc', chunks={{'time': 24}}
 ALL_YEARS_PATH = os.path.join(DATA_DIR, 'jones_israel_all_years.nc')
 print(f"\nCombining {len(saved)} yearly files → {ALL_YEARS_PATH} ...")
 
-import xarray as xr
-ds_all = xr.open_mfdataset(sorted(saved), combine='by_coords', chunks={'time': 24})
+ds_all = xr.open_mfdataset(sorted(saved), combine='by_coords', chunks={'time': CHUNK})
 ds_all.attrs['description'] = 'Jones et al. CPLRSTW features + lightning target, all years combined'
 ds_all.attrs['years']       = f"{ALL_YEARS[0]}–{ALL_YEARS[-1]}"
+for y in sorted(set(ds_all.time.dt.year.values)):
+    m = sorted(set(ds_all.time.sel(time=str(y)).dt.month.values))
+    print(f"  {y}: months {m[0]}–{m[-1]} ({len(m)} months)" if m == list(range(m[0], m[-1] + 1))
+          else f"  {y}: months {m}")
 
-# Write as a single NetCDF (this may take a few minutes for 13 years)
-ds_all.to_netcdf(ALL_YEARS_PATH)
+# Written compressed to a temporary file, then renamed (whole years: allow up to an hour or two)
+tmp = ALL_YEARS_PATH + '.tmp'
+ds_all.to_netcdf(tmp, encoding=encoding_for(ds_all))
 ds_all.close()
+os.replace(tmp, ALL_YEARS_PATH)
 print(f"Saved: {ALL_YEARS_PATH}")

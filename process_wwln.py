@@ -162,10 +162,11 @@ def process_year(year: int):
     print(f"  Non-zero grid cells:     {np.count_nonzero(counts):,}")
     if bad_rows:
         print(f"  WARNING: {bad_rows:,} rows with unreadable date/time were skipped")
-    season = times.month >= 9
-    missing_days = pd.DatetimeIndex(times[season & (available == 0)]).normalize().unique()
+    missing_days = pd.DatetimeIndex(times[available == 0]).normalize().unique()
     if len(missing_days):
-        print(f"  WARNING: no .loc file for {len(missing_days)} day(s) in Sep–Dec "
+        by_month = pd.Series(1, index=missing_days).groupby(missing_days.month).sum()
+        print(f"  days without a .loc file per month: " + ', '.join(f"{m}: {n}" for m, n in by_month.items()))
+        print(f"  WARNING: no .loc file for {len(missing_days)} day(s) "
               f"(stored as data_available=0): {[d.strftime('%Y-%m-%d') for d in missing_days[:10]]}"
               + (' ...' if len(missing_days) > 10 else ''))
 
@@ -209,7 +210,24 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--year', type=int, default=None,
                         help='Process a single year (default: all 2013–2025)')
+    parser.add_argument('--inventory', action='store_true',
+                        help='only list, per year and month, how many daily .loc files there are')
     args = parser.parse_args()
+
+    if args.inventory:
+        import calendar
+        for year in ([args.year] if args.year else YEARS):
+            ydir = os.path.join(WWLN_DIR, str(year))
+            folders = sorted(os.listdir(ydir)) if os.path.isdir(ydir) else []
+            expected = {f'{calendar.month_abbr[m]}{year}': m for m in range(1, 13)}
+            line = []
+            for name, m in expected.items():
+                n = len(glob.glob(os.path.join(ydir, name, f'A{year}{m:02d}??.loc')))
+                days = calendar.monthrange(year, m)[1]
+                line.append(f"{calendar.month_abbr[m]} {n}/{days}" + ('' if n == days else ' !'))
+            odd = [f for f in folders if f not in expected]
+            print(f"{year}: " + '  '.join(line) + (f"   unexpected folders: {odd}" if odd else ''))
+        raise SystemExit
 
     years_to_run = [args.year] if args.year else YEARS
 

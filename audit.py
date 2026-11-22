@@ -7,6 +7,7 @@ class) straight from train_unet.py, so it always audits the configuration you ac
     python audit.py                 # everything, incl. control experiments (trains a few small models)
     python audit.py --quick         # data + leakage checks + baselines only (no training)
     python audit.py --pred unet_12h_poisson_top7_OND_predictions.nc   # audit a different run
+    python audit.py --months 10 11 12   # the Oct–Dec run (default: ACTIVE_MONTHS of train_unet.py)
 (the loss and window length come from train_unet.py — set LOSS / AGG_HOURS there first)
 
 Nothing is overwritten: checkpoints, caches and prediction files are only read.
@@ -23,7 +24,7 @@ Parts
                          another day — both must lose their skill; repeat the real model with
                          several seeds; permutation importance of each input
 """
-import argparse, ast, hashlib, json, math, os, sys, time, warnings
+import argparse, ast, hashlib, json, math, os, re, sys, time, warnings
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -36,8 +37,10 @@ warnings.filterwarnings('ignore', category=RuntimeWarning)
 # ════════════════════════════════════════════════════════════════════════════════
 # Settings from train_unet.py
 # ════════════════════════════════════════════════════════════════════════════════
-def read_train_config(path):
-    """Evaluate the simple top-level assignments of train_unet.py without running it."""
+def read_train_config(path, overrides=None):
+    """Evaluate the simple top-level assignments of train_unet.py without running it.
+    `overrides` replaces settings the way train_unet.py's command-line options do (e.g. ACTIVE_MONTHS)."""
+    overrides = overrides or {}
     src = open(path).read()
     tree = ast.parse(src)
     cfg = {}
@@ -53,6 +56,9 @@ def read_train_config(path):
                 continue
             for t, v in pairs:
                 if not isinstance(t, ast.Name):
+                    continue
+                if t.id in overrides:
+                    cfg[t.id] = overrides[t.id]
                     continue
                 try:
                     cfg[t.id] = ast.literal_eval(v)
@@ -72,13 +78,15 @@ parser = argparse.ArgumentParser(description='Audit data, leakage and skill of t
 parser.add_argument('--quick', action='store_true', help='skip the control experiments (no training)')
 parser.add_argument('--pred', default=None, help='predictions file to audit (default: OUT_PATH of train_unet.py)')
 parser.add_argument('--config', default='train_unet.py', help='training script to read settings from')
+parser.add_argument('--months', type=int, nargs='+',
+                    help='which run: its months, like train_unet.py --months (default: ACTIVE_MONTHS in train_unet.py)')
 parser.add_argument('--seeds', type=int, default=3, help='number of seeds for the real-model repeat (default 3)')
 parser.add_argument('--max-epochs', type=int, default=60, help='epoch cap for control trainings (default 60)')
 parser.add_argument('--shift-days', type=int, default=7, help='time shift for the shifted-input control')
 parser.add_argument('--fig-dir', default=None, help='default: figures/audit/<run name>')
 args = parser.parse_args()
 
-cfg = read_train_config(args.config)
+cfg = read_train_config(args.config, {'ACTIVE_MONTHS': sorted(set(args.months))} if args.months else None)
 need = ['DATA_DIR', 'DATA_PATH', 'PREP_PATH', 'CKPT_PATH', 'OUT_PATH', 'LOSS', 'feature_name', 'output_name',
         'LOG_FEATURES', 'VAL_YEARS', 'TEST_YEARS', 'ACTIVE_MONTHS', 'AGG_HOURS',
         'LAT_MIN', 'LAT_MAX', 'LON_MIN', 'LON_MAX', 'SEED', 'BATCH_SIZE', 'LR', 'PATIENCE']
@@ -100,7 +108,7 @@ if args.fig_dir is None:   # one folder per configuration (same name as jones_fi
         with xr.open_dataset(PRED_PATH) as _p:
             _run = run_folder(_p.attrs, PRED_PATH)
     except Exception:          # no predictions yet: fall back to the file name
-        _run = os.path.basename(PRED_PATH).replace('_OND_predictions.nc', '').replace('.nc', '')
+        _run = re.sub(r'_(OND|ALL|M\d+)_predictions\.nc$', '', os.path.basename(PRED_PATH)).replace('.nc', '')
     args.fig_dir = os.path.join('figures', 'audit', _run)
 os.makedirs(args.fig_dir, exist_ok=True)
 THR, WIN = cfg.get('FSS_THRESHOLD', 1.0), cfg.get('FSS_WINDOW', 3)
@@ -403,7 +411,8 @@ report('PASS' if len(idx_test) and len(idx_val) and len(idx_train) else 'FAIL',
        f"windows — train {len(idx_train)}, val {len(idx_val)}, test {len(idx_test)}")
 gap_days = (times[idx_test].min() - times[idx_train].max()).days if len(idx_test) else None
 info(f"closest train→test distance: {abs(gap_days) if gap_days is not None else '?'} days "
-     "(seasons are Oct–Dec only, so neighbouring years are ~9 months apart)")
+     + ("(seasons are Oct–Dec only, so neighbouring years are ~9 months apart)" if cfg['ACTIVE_MONTHS'] == [10, 11, 12]
+        else "(whole years)" if len(cfg['ACTIVE_MONTHS']) == 12 else ""))
 
 section("B2. Checkpoint provenance (was the model trained on these years only?)")
 meta_path = cfg['CKPT_PATH'] + '.json'

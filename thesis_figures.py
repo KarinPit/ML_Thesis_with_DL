@@ -10,7 +10,12 @@ Run on EC2 from the repo folder, after train_unet.py has written its predictions
         audit_log.txt : the printed output of audit.py         (python audit.py | tee audit_log.txt)
         --train-log train_log.txt only for models trained before the loss history was saved
 
-Outputs (folder figures/thesis/):
+    python thesis_figures.py --months 10 11 12    # the Oct–Dec run (default: ACTIVE_MONTHS of train_unet.py)
+    python thesis_figures.py --eval-months 10 11 12   # whole-year model, scored on Oct–Dec only (to compare
+                                                      # it with the Oct–Dec model on the same windows)
+
+Outputs (folder figures/thesis/ for the Oct–Dec run; figures/thesis_ALL/ for the whole year;
+figures/thesis_ALL_evalOND/ with --eval-months 10 11 12):
     F01_…pdf / .png     main figures            (PDF for LaTeX, PNG for a quick look)
     A1_…, O2_…          appendix and optional figures
     tables/T1_….tex     tables for LaTeX (booktabs), plus .csv
@@ -22,8 +27,9 @@ Nothing in the data folder is changed.
 
 Conventions used in every figure
   • one colour per model (COL below), colour-blind safe (Okabe–Ito)
-  • lightning amounts on maps / scatter plots in strokes km⁻² yr⁻¹ (rate during Oct–Dec, as in
-    Jones et al. 2026); case studies in strokes per cell per window
+  • lightning amounts on maps / scatter plots in strokes km⁻² yr⁻¹ (for a season: the rate during that
+    season, as in Jones et al. 2026); case studies in strokes per cell per window
+  • more than 4 months (whole year): "by month" panels are grouped by season (DJF, MAM, JJA, SON)
   • skill = FSS for "≥ 1 stroke per window" in a 3 × 3-cell neighbourhood unless stated
   • 95 % confidence intervals from a block bootstrap over BLOCK_DAYS-day blocks (storms last days,
     so single windows are not independent)
@@ -46,7 +52,7 @@ the files itself (the settings in train_unet.py stay at the main run):
   A4  training curves: read from the predictions file (models trained with the current train_unet.py),
                        otherwise from --train-log
   A5  robustness:      python audit.py | tee audit_log.txt   →   --audit-log audit_log.txt
-File names and patterns:
+File names and patterns ({season} = OND, ALL …, the season of the run; {stag} = '' for OND, else _ALL …):
   F3  ablation:        ABLATION below. Each step reads its own predictions file if it exists; otherwise
                        it falls back to the FSS stored in figures/_old/<run folder>/run_summary.json
                        (shown as open markers, without a confidence interval).
@@ -101,12 +107,12 @@ COL = {'Observed': '#000000', 'ILDN': '#000000', 'WWLLN': '#E69F00',
 
 # F3 — ablation steps (label, predictions file in the data folder, variable, earlier run folder)
 ABLATION = [
-    ('Jones et al. (2026) set-up',            'ablation_1_jones_setup_OND_predictions.nc', 'pred_count_raw', 'unet_12h_mse_jonesnorm_raw_866fb6'),
-    ('+ eight inputs of this study',           'ablation_2_our_inputs_OND_predictions.nc',  'pred_count_raw', 'unet_12h_mse_jonesnorm_raw_f7c7a9'),
-    ('+ log-transformed inputs',       'ablation_3_log_inputs_OND_predictions.nc',  'pred_count_raw', 'unet_12h_mse_jonesnorm_raw_3a89cb'),
-    ('+ quantile-mapping calibration', 'ablation_3_log_inputs_OND_predictions.nc',  'pred_count',     'unet_12h_mse_jonesnorm_cal_112405'),
+    ('Jones et al. (2026) set-up',            'ablation_1_jones_setup_{season}_predictions.nc', 'pred_count_raw', 'unet_12h_mse_jonesnorm_raw_866fb6'),
+    ('+ eight inputs of this study',           'ablation_2_our_inputs_{season}_predictions.nc',  'pred_count_raw', 'unet_12h_mse_jonesnorm_raw_f7c7a9'),
+    ('+ log-transformed inputs',       'ablation_3_log_inputs_{season}_predictions.nc',  'pred_count_raw', 'unet_12h_mse_jonesnorm_raw_3a89cb'),
+    ('+ quantile-mapping calibration', 'ablation_3_log_inputs_{season}_predictions.nc',  'pred_count',     'unet_12h_mse_jonesnorm_cal_112405'),
     ('+ Poisson loss (final model)',   None,                                        'pred_count',     'unet_12h_poisson_cal_6124ab'),
-]   # None = the main predictions file
+]   # None = the main predictions file. The run folders (earlier Oct–Dec runs) are used for Oct–Dec only.
 
 # F13 — storm history (glob patterns in the data folder; several files = several random seeds)
 #   '1 window'  : the normal model (inputs of the current window only)
@@ -115,16 +121,16 @@ ABLATION = [
 #                 same number of inputs, no storm history. If '3 windows' beats 'Control', the gain comes
 #                 from the history and not just from a bigger model.
 LAG_RUNS = {
-    '1 window':  ['{main}', 'unet_12h_poisson_seed*_OND_predictions.nc'],
-    '3 windows': ['unet_12h_poisson_lags3_OND_predictions.nc', 'unet_12h_poisson_lags3_seed*_OND_predictions.nc'],
-    'Control':   ['unet_12h_poisson_lags3ctrl*_OND_predictions.nc'],
+    '1 window':  ['{main}', 'unet_12h_poisson_seed*_{season}_predictions.nc'],
+    '3 windows': ['unet_12h_poisson_lags3_{season}_predictions.nc', 'unet_12h_poisson_lags3_seed*_{season}_predictions.nc'],
+    'Control':   ['unet_12h_poisson_lags3ctrl*_{season}_predictions.nc'],
 }
-LAG_CKPT = 'unet_12h_poisson_lags3_best.pt'     # + .json passport with "n_lags" (oldest slot first)
+LAG_CKPT = 'unet_12h_poisson{stag}_lags3_best.pt'     # + .json passport with "n_lags" (oldest slot first)
 
-PERCELL_FILE = 'percell_poisson_OND_predictions.nc'                 # O1
-LEARNING_CURVE_FILES = {2: 'unet_12h_poisson_train2y_OND_predictions.nc',
-                        4: 'unet_12h_poisson_train4y_OND_predictions.nc',
-                        6: 'unet_12h_poisson_train6y_OND_predictions.nc',
+PERCELL_FILE = 'percell_poisson_{season}_predictions.nc'                 # O1
+LEARNING_CURVE_FILES = {2: 'unet_12h_poisson_train2y_{season}_predictions.nc',
+                        4: 'unet_12h_poisson_train4y_{season}_predictions.nc',
+                        6: 'unet_12h_poisson_train6y_{season}_predictions.nc',
                         'all': '{main}'}                             # O2 ('all' = every training year)
 
 NICE = {'precipitation': 'Precipitation (IMERG)', 'total_totals_index': 'Total Totals index',
@@ -159,8 +165,10 @@ CASE_CMAP = plt.cm.magma_r.copy(); CASE_CMAP.set_bad('white'); CASE_CMAP.set_und
 # ═════════════════════════════════════════════════════════════════════════════════════════════
 # Small helpers
 # ═════════════════════════════════════════════════════════════════════════════════════════════
-def read_train_config(path):
-    """Top-level settings of train_unet.py (plain values and f-strings), read without running it."""
+def read_train_config(path, overrides=None):
+    """Top-level settings of train_unet.py (plain values and f-strings), read without running it.
+    `overrides` replaces settings the way train_unet.py's command-line options do (e.g. ACTIVE_MONTHS)."""
+    overrides = overrides or {}
     if not os.path.exists(path):
         return {}
     src = open(path).read()
@@ -173,6 +181,9 @@ def read_train_config(path):
                 list(zip(tgt.elts, node.value.elts)) if isinstance(tgt, ast.Tuple) and isinstance(node.value, ast.Tuple) else [])
             for t, v in pairs:
                 if not isinstance(t, ast.Name):
+                    continue
+                if t.id in overrides:
+                    cfg[t.id] = overrides[t.id]
                     continue
                 try:
                     cfg[t.id] = ast.literal_eval(v)
@@ -195,6 +206,43 @@ def _load(v):
         except Exception:
             pass
     return v
+
+
+SEASON_MONTHS = {'OND': [10, 11, 12], 'ALL': list(range(1, 13))}
+MET_SEASONS = [('DJF', (12, 1, 2)), ('MAM', (3, 4, 5)), ('JJA', (6, 7, 8)), ('SON', (9, 10, 11))]
+
+
+def season_name(months):
+    """Same rule as SEASON in train_unet.py: 'OND', 'ALL', else e.g. 'M060708'."""
+    ms = sorted(set(months))
+    return next((k for k, v in SEASON_MONTHS.items() if v == ms), 'M' + ''.join(f'{m:02d}' for m in ms))
+
+
+def months_label(months):
+    """'Oct–Dec', 'Jan–Dec', 'Jun', 'Jan, Mar' …"""
+    ms = sorted(set(months))
+    ab = lambda m: pd.Timestamp(2000, m, 1).strftime('%b')
+    if len(ms) == 1:
+        return ab(ms[0])
+    return f'{ab(ms[0])}–{ab(ms[-1])}' if ms == list(range(ms[0], ms[-1] + 1)) else ', '.join(map(ab, ms))
+
+
+def whole_year():
+    return sorted(MONTHS) == list(range(1, 13))
+
+
+def rate_note():
+    """Unit note for strokes km⁻² yr⁻¹: a season's rate, or nothing for the whole year."""
+    return '' if whole_year() else f' ({months_label(MONTHS)} rate)'
+
+
+def period_groups(months):
+    """(label, mask) for 'by month' panels: each month, or each season (DJF …) when there are more than 4."""
+    months = np.asarray(months)
+    present = sorted(set(months.tolist()))
+    if len(present) <= 4:
+        return [(pd.Timestamp(2000, m, 1).strftime('%b'), months == m) for m in present]
+    return [(lab, np.isin(months, ms)) for lab, ms in MET_SEASONS if np.isin(months, ms).any()]
 
 
 class Missing(Exception):
@@ -345,7 +393,15 @@ def calibrate(pred_val, obs_val, pred):
 class Data:
     def __init__(self, args):
         self.args = args
-        self.cfg = read_train_config(args.train_script)
+        months = getattr(args, 'months', None)
+        self.cfg = read_train_config(args.train_script, {'ACTIVE_MONTHS': sorted(set(months))} if months else None)
+        m = re.search(r'_(OND|ALL|M\d+)_predictions\.nc$', args.pred or '')
+        if m and m.group(1) in SEASON_MONTHS and m.group(1) != self.cfg.get('SEASON', 'OND'):
+            # --pred of another season: read the settings of that season (aggregated file, checkpoint …)
+            self.cfg = read_train_config(args.train_script, {'ACTIVE_MONTHS': SEASON_MONTHS[m.group(1)]})
+        self.season = m.group(1) if m else (self.cfg.get('SEASON') or 'OND')
+        self.stag = '' if self.season == 'OND' else '_' + self.season
+        self.eval_months = sorted(set(getattr(args, 'eval_months', None) or [])) or None
         self.data_dir = args.data_dir or self.cfg.get('DATA_DIR') or os.path.join(HERE, 'data')
         rel = lambda p: os.path.join(self.data_dir, os.path.basename(p)) if p else None
         tag = self.cfg.get('RUN_TAG') or ''
@@ -353,7 +409,8 @@ class Data:
             print(f"NOTE: train_unet.py has RUN_TAG '{tag}' — using the main run's files (without '{tag}')", flush=True)
             for k in ('OUT_PATH', 'CKPT_PATH'):
                 if self.cfg.get(k):
-                    self.cfg[k] = self.cfg[k].replace(tag + '_OND', '_OND').replace(tag + '_best', '_best')
+                    self.cfg[k] = (self.cfg[k].replace(f'{tag}_{self.season}_', f'_{self.season}_')
+                                   .replace(tag + '_best', '_best'))
         self.pred_path = args.pred if args.pred and os.path.isabs(args.pred) else (
             os.path.join(self.data_dir, args.pred) if args.pred else rel(self.cfg.get('OUT_PATH')))
         self.prep_path = rel(self.cfg.get('PREP_PATH'))
@@ -364,7 +421,12 @@ class Data:
     def path(self, name):
         if name is None or name == '{main}':
             return self.pred_path
+        name = name.replace('{season}', self.season).replace('{stag}', self.stag)
         return name if os.path.isabs(name) else os.path.join(self.data_dir, name)
+
+    @property
+    def period_word(self):
+        return "year" if whole_year() else "season"
 
     # ── predictions of the final model ──
     def pred(self):
@@ -372,11 +434,19 @@ class Data:
             if not self.pred_path or not os.path.exists(self.pred_path):
                 raise Missing(f"predictions file {self.pred_path} (run train_unet.py first)")
             p = xr.open_dataset(self.pred_path).load()
-            self._cache['pred'] = p
             self.A = {k: _load(v) for k, v in p.attrs.items()}
             self.agg = int(self.A.get('agg_hours', 12))
             global MONTHS
             MONTHS = list(self.A.get('months', [10, 11, 12]))
+            if self.eval_months:                     # score on some months only (e.g. Oct–Dec of a whole-year model)
+                em = [m for m in MONTHS if m in self.eval_months]
+                if not em:
+                    raise Missing(f'test windows in months {self.eval_months} (the model has months {MONTHS})')
+                p = p.sel(time=p.time.dt.month.isin(em))
+                print(f"  scoring on {months_label(em)} only: {p.sizes['time']} test windows "
+                      f"(model trained on {months_label(MONTHS)})", flush=True)
+                MONTHS = em
+            self._cache['pred'] = p
         return self._cache['pred']
 
     # ── aggregated data file (inputs + WWLLN on the model grid, all years) ──
@@ -419,7 +489,9 @@ class Data:
         M['U-Net'] = np.nan_to_num(p['pred_count'].values.astype('float32'))
         if 'pred_count_raw' in p:
             M['U-Net (raw)'] = np.nan_to_num(p['pred_count_raw'].values.astype('float32'))
-        clim = {m: ltg[idx_tr][mon[idx_tr] == m].mean(0) for m in sorted(set(mon))}
+        # training-year mean per month (a month without training windows gets the all-month mean)
+        clim = {m: ltg[idx_tr][mon[idx_tr] == m].mean(0) if (mon[idx_tr] == m).any() else ltg[idx_tr].mean(0)
+                for m in sorted(set(mon))}
         clim_va = np.stack([clim[m] for m in mon[idx_va]]); clim_te = np.stack([clim[m] for m in mon[idx_te]])
         M['Climatology'] = calibrate(clim_va, obs_va, clim_te)
         RAW = {'U-Net': M.get('U-Net (raw)', M['U-Net']), 'Climatology': clim_te}
@@ -558,7 +630,8 @@ def colorbar(fig, im, axs, label, **kw):
 # ═════════════════════════════════════════════════════════════════════════════════════════════
 def F1_study_area(D):
     c = D.core()
-    clim = c['to_density'](c['ltg_all'][c['idx_tr']].mean(0))
+    tr_m = c['idx_tr'][np.isin(c['mon_all'][c['idx_tr']], MONTHS)]     # training windows of the months shown
+    clim = c['to_density'](c['ltg_all'][tr_m].mean(0))
     lats, lons = c['lats'], c['lons']
     ext = [lons.min() - 0.125, lons.max() + 0.125, lats.min() - 0.125, lats.max() + 0.125]
     fig, axs = map_axes(1, 1, W2, extra_h=0.3, extent=ext)
@@ -569,12 +642,13 @@ def F1_study_area(D):
     box_outline(ax, ILDN_BOX, color='#D55E00', lw=1.2)
     tkw = {'transform': PROJ} if PROJ is not None else {}
     ax.text(ILDN_BOX[3] - 0.1, ILDN_BOX[1] + 0.2, 'ILDN box', color='#D55E00', fontsize=7, ha='right', **tkw)
-    colorbar(fig, im, ax, 'WWLLN strokes km$^{-2}$ yr$^{-1}$ (Oct–Dec rate)', extend='both')
+    colorbar(fig, im, ax, 'WWLLN strokes km$^{-2}$ yr$^{-1}$' + rate_note(), extend='both')
     yrs = c['tr_years']
     NUMBERS['F1'] = {'domain_mean_density': float(np.mean(clim)), 'max_density': float(np.max(clim))}
     save(fig, 'F01_study_area',
          f"Study domain ({lats.min():.2f}–{lats.max():.2f}°N, {lons.min():.2f}–{lons.max():.2f}°E, 0.25° grid) and mean "
-         f"WWLLN lightning stroke density for October–December of the training years ({min(yrs)}–{max(yrs)}), "
+         f"WWLLN lightning stroke density over the training years ({min(yrs)}–{max(yrs)}, "
+         f"{'all months' if whole_year() else months_label(MONTHS)}), "
          f"in strokes km⁻² yr⁻¹. The orange box marks the area used for the comparison with the Israeli "
          f"network (ILDN).")
 
@@ -634,6 +708,9 @@ def F3_ablation(D):
         if series is not None:
             m, lo, hi = mean_ci(series, c['blocks'])
             rows.append((label, m, lo, hi, 'file'))
+            continue
+        if D.season != 'OND' or D.eval_months:     # the earlier runs were Oct–Dec runs scored on Oct–Dec
+            rows.append((label, np.nan, np.nan, np.nan, 'missing'))
             continue
         js = os.path.join(OLD_FIG_DIR, old, 'run_summary.json')
         if not os.path.exists(js):
@@ -729,17 +806,16 @@ def F4_fss_vs_scale(D):
     ax.set_xlabel('neighbourhood size (cells; 1 cell = 0.25°)'); ax.set_ylabel('FSS (≥ 1 stroke)')
     ax.set_xticks(SCALES); ax.set_ylim(0, 1); ax.legend(loc='lower right')
     letter(ax, 'a')
-    # (b) by month at 3 × 3
-    months = sorted(set(c['months']))
+    # (c) by month (or by season for the whole year) at 3 × 3
+    groups = period_groups(c['months'])
     width = 0.8 / len(models)
     for k, name in enumerate(models):
         s = fss_series(c['obs'], c['M'][name], valid=D.valid(name, c))
-        for j, m in enumerate(months):
-            sel = c['months'] == m
+        for j, (_, sel) in enumerate(groups):
             mu, lo, hi = mean_ci(s[sel], c['blocks'][sel])
             bx.bar(j + (k - (len(models) - 1) / 2) * width, mu, width * 0.92, color=COL[name],
                    yerr=[[mu - lo], [hi - mu]] if np.isfinite(lo) else None, error_kw={'lw': 0.7, 'capsize': 1.5})
-    bx.set_xticks(range(len(months))); bx.set_xticklabels([pd.Timestamp(2000, m, 1).strftime('%b') for m in months])
+    bx.set_xticks(range(len(groups))); bx.set_xticklabels([g[0] for g in groups])
     bx.set_ylabel('FSS (3 × 3 cells)'); bx.set_ylim(0, 1)
     letter(bx, 'c')
     fig.tight_layout()
@@ -759,7 +835,8 @@ def F4_fss_vs_scale(D):
          "matters: FSS of the U-Net minus FSS of each baseline, computed window by window, with its 95 % "
          "block-bootstrap interval; above zero = U-Net better"
          + (f" (CAPE × P at 3 × 3 cells: {fmt_ci(*dr[i3], nd=3)})" if dr is not None else '') +
-         ". Climatology is left out of (b) because its difference is off the scale. (c) FSS at 3 × 3 cells by month.")
+         ". Climatology is left out of (b) because its difference is off the scale. (c) FSS at 3 × 3 cells by "
+         + ("season (DJF = Dec–Feb …)." if len(set(c['months'])) > 4 else "month."))
 
 
 def _block_ttest(diff, blocks):
@@ -806,7 +883,8 @@ def F5_bias_maps(D):
     colorbar(fig, last, axs[1:, 0], 'difference, strokes km$^{-2}$ yr$^{-1}$', extend='both')
     NUMBERS['F5'] = stats
     save(fig, 'F05_bias_maps',
-         "(a) Observed mean WWLLN stroke density on the test years (strokes km⁻² yr⁻¹, Oct–Dec rate). "
+         f"(a) Observed mean WWLLN stroke density on the test years (strokes km⁻² yr⁻¹"
+         f"{'' if whole_year() else ', ' + months_label(MONTHS) + ' rate'}). "
          "(b) U-Net (expected strokes = Poisson rate, before calibration) minus observed and (c) CAPE × P (constant "
          "fitted on the training years) minus observed. "
          f"Dots mark cells where the difference is significant (p < 0.05, t-test on {BLOCK_DAYS}-day block "
@@ -912,7 +990,8 @@ def _prob_models(D, c):
     if 'r14_rate' in c:
         P['CAPE × P'] = 1 - np.exp(-c['r14_rate'])
     ltg, mon, tr = c['ltg_all'], c['mon_all'], c['idx_tr']
-    freq = {m: (ltg[tr][mon[tr] == m] >= THR).mean(0) for m in sorted(set(mon[tr]))}
+    freq = {m: (ltg[tr][mon[tr] == m] >= THR).mean(0) if (mon[tr] == m).any() else (ltg[tr] >= THR).mean(0)
+            for m in sorted(set(mon))}
     P['Climatology'] = np.stack([freq[m] for m in c['months']])
     return P
 
@@ -1057,7 +1136,11 @@ def F9_season(D):
             r = pd.Series(s[sel]).rolling(10, min_periods=4, center=True).mean()
             bx.plot(t[sel], r, color=COL[n], lw=1.0)
         bx.set_ylim(0, 1); bx.set_ylabel('FSS, 5-day\nrunning mean')
-        bx.xaxis.set_major_formatter(matplotlib.dates.DateFormatter('%d %b'))
+        if (t[sel].max() - t[sel].min()).days > 120:          # whole year: one tick per month
+            bx.xaxis.set_major_locator(matplotlib.dates.MonthLocator())
+            bx.xaxis.set_major_formatter(matplotlib.dates.DateFormatter('%b'))
+        else:
+            bx.xaxis.set_major_formatter(matplotlib.dates.DateFormatter('%d %b'))
         rr = spearmanr(series['Observed'][sel], series['U-Net'][sel])[0]
         stats[str(y)] = {'spearman_domain_total_unet': float(rr)}
         letter(ax, 'abcdef'[2 * k]); letter(bx, 'abcdef'[2 * k + 1])
@@ -1065,7 +1148,7 @@ def F9_season(D):
     fig.legend(*axs[0].get_legend_handles_labels(), loc='lower center', bbox_to_anchor=(0.5, 1.0), ncol=3)
     NUMBERS['F9'] = stats
     save(fig, 'F09_season_timeseries',
-         f"Lightning through each test season. Top of each pair: strokes per {D.agg}-h window summed over the domain, "
+         f"Lightning through each test {D.period_word}. Top of each pair: strokes per {D.agg}-h window summed over the domain, "
          "observed and modelled as expected strokes (U-Net Poisson rate; CAPE × P with its fitted constant), log scale. "
          "Bottom: FSS (3 × 3 cells, ≥ 1 stroke) as a 5-day running mean for the calibrated U-Net and baselines. " +
          ' '.join(f"{y}: Spearman r of domain totals {fmt(v['spearman_domain_total_unet'])}." for y, v in stats.items()))
@@ -1243,7 +1326,7 @@ def F12_ildn(D):
     NUMBERS['F12'] = r['scores']
     save(fig, 'F12_ildn',
          f"Independent comparison with the Israeli Lightning Detection Network (ILDN) in the box "
-         f"{ILDN_BOX[0]}–{ILDN_BOX[1]}°N, {ILDN_BOX[2]}–{ILDN_BOX[3]}°E, Oct–Dec {', '.join(map(str, years))}. "
+         f"{ILDN_BOX[0]}–{ILDN_BOX[1]}°N, {ILDN_BOX[2]}–{ILDN_BOX[3]}°E, {r['period']}. "
          "(a–d) Mean lightning divided by its box mean, so patterns are comparable despite different detection "
          "efficiencies; r is the Spearman correlation with the ILDN map. Bottom: strokes per window in the box. "
          "U-Net: expected strokes (Poisson rate before calibration); CAPE × P with its fitted constant. ILDN detects "
@@ -1260,7 +1343,7 @@ def _ildn(D):
     p = D.pred()
     uvar = 'pred_count_raw' if 'pred_count_raw' in p else 'pred_count'     # expected strokes (Poisson rate)
     parts = [p[[uvar, 'obs_count']]]
-    ex = D.pred_path.replace('_OND_predictions.nc', '_OND_predictions_extra.nc')
+    ex = re.sub(r'_predictions\.nc$', '_predictions_extra.nc', D.pred_path)
     if os.path.exists(ex):
         parts.append(xr.open_dataset(ex)[[uvar, 'obs_count']].load())
     pr = xr.concat(parts, dim='time').sortby('time')
@@ -1276,8 +1359,9 @@ def _ildn(D):
     years = sorted(set(il.t.dt.year) & set(pd.DatetimeIndex(pr.time.values).year))
     if not years:
         raise Missing('a year with both ILDN data and model predictions')
-    tt = pd.DatetimeIndex(pr.time.values)
-    pr = pr.sel(time=tt.year.isin(years) & tt.month.isin(MONTHS))
+    covered = set(zip(il.t.dt.year, il.t.dt.month))          # (year, month) with ILDN data; a month without
+    tt = pd.DatetimeIndex(pr.time.values)                     # a single ILDN stroke counts as not covered
+    pr = pr.sel(time=np.array([(y, m) in covered for y, m in zip(tt.year, tt.month)]))
     times = pd.DatetimeIndex(pr.time.values)
     lats, lons = c['lats'], c['lons']
     dlat, dlon = lats[1] - lats[0], lons[1] - lons[0]
@@ -1326,8 +1410,11 @@ def _ildn(D):
     res = {g: {n: scores(I[m], f[m]) for n, f in fields.items()} for g, m in groups.items()}
     for g, m in groups.items():
         res[g]['_ildn'] = {'strokes_in_box': int(I[m].sum()), 'windows': int(m.sum())}
+    per_year = {y: sorted({m for (yy, m) in covered if yy == y}) for y in years}
+    period = '; '.join(f"{months_label(ms)} {y}" for y, ms in per_year.items() if ms)
+    print(f"  ILDN comparison: {period}", flush=True)
     D._cache['ildn'] = {'I': I, 'fields': fields, 'times': times, 'years': years, 'scores': res,
-                        'blat': lats[bi], 'blon': lons[bj], 'il': il}
+                        'blat': lats[bi], 'blon': lons[bj], 'il': il, 'period': period}
     return D._cache['ildn']
 
 
@@ -1377,9 +1464,9 @@ def F13_storm_history(D):
     one = np.nanmean([fss_series(c['obs'], np.nan_to_num(p), valid=common) for p in groups['1 window']], axis=0)
     three = np.nanmean([fss_series(c['obs'], np.nan_to_num(p), valid=common) for p in groups['3 windows']], axis=0)
     diff = three - one
-    months = sorted(set(c['months']))
-    labs = [pd.Timestamp(2000, m, 1).strftime('%b') for m in months] + ['all']
-    for j, sel in enumerate([c['months'] == m for m in months] + [np.ones(len(diff), bool)]):
+    pg = period_groups(c['months'])
+    labs = [g[0] for g in pg] + ['all']
+    for j, sel in enumerate([g[1] for g in pg] + [np.ones(len(diff), bool)]):
         mu, l, h = mean_ci(diff[sel], c['blocks'][sel])
         bx.errorbar(j, mu, yerr=[[mu - l], [h - mu]] if np.isfinite(l) else None, fmt='o', color=COL['3 windows'],
                     ms=4, capsize=2, lw=1)
@@ -1416,7 +1503,8 @@ def F13_storm_history(D):
     save(fig, 'F13_storm_history',
          f"Does storm history help? (a) FSS against neighbourhood size for the model that sees only the current "
          f"window and for the model that also sees the two previous {D.agg}-h windows (mean over random seeds; "
-         f"shading: 95 % block-bootstrap interval). (b) FSS gain (3 × 3 cells) of the three-window model by month; "
+         f"shading: 95 % block-bootstrap interval). (b) FSS gain (3 × 3 cells) of the three-window model by "
+         f"{'season' if len(set(c['months'])) > 4 else 'month'}; "
          f"all windows: {fmt_ci(*g, nd=3)}. An interval that crosses zero means no significant gain."
          + (" Control: the three-window model with the two earlier slots filled with inputs from random other "
             "days (same number of inputs, no storm history)." if 'Control' in groups else '')
@@ -1460,6 +1548,9 @@ def T2_model(D):
         ['Random seed', str(hp.get('seed', '?'))],
         ['Calibration', str(A.get('calibration', '?')).replace('[', '').replace(']', '')],
         ['Training / validation / test years', f"{yrs(A.get('train_years'))} / {yrs(A.get('val_years'))} / {yrs(A.get('test_years'))}"],
+        ['Months', ('all (Jan–Dec)' if sorted(A.get('months') or []) == list(range(1, 13))
+                    else months_label(A.get('months') or [10, 11, 12]))
+                   + (f"; scored on {months_label(MONTHS)} only" if D.eval_months else '')],
     ]
     write_table('T2_model_training', pd.DataFrame(rows, columns=['Setting', 'Value']),
                 'Model and training settings.', col_format=r'lp{0.62\textwidth}')
@@ -1513,7 +1604,7 @@ def T4_bias(D):
         rows.append(row)
     cols = ['Region', 'Observed'] + [n for n, m in models.items() if m is not None]
     write_table('T4_bias_land_sea', pd.DataFrame(rows, columns=cols),
-                "Mean bias (model − observed) in strokes km⁻² yr⁻¹ (Oct–Dec rate) on the test years, with the relative "
+                f"Mean bias (model − observed) in strokes km⁻² yr⁻¹{rate_note()} on the test years, with the relative "
                 f"bias in brackets. Land: lsm ≥ {LAND_LSM}. The Poisson rate (expected strokes) is the U-Net output "
                 "for amounts; the calibrated output sets most weak values to zero and is meant for event scores.")
 
@@ -1529,7 +1620,7 @@ def T5_ildn(D):
     rows = [[lab] + [fmt(s[k][key]) for k in order] for key, lab in labels.items()]
     write_table('T5_ildn_scores', pd.DataFrame(rows, columns=['Score against ILDN'] + order),
                 f"Scores against ILDN in the box {ILDN_BOX[0]}–{ILDN_BOX[1]}°N, {ILDN_BOX[2]}–{ILDN_BOX[3]}°E, "
-                f"Oct–Dec {', '.join(map(str, r['years']))} ({s['_ildn']['strokes_in_box']:,} ILDN strokes). WWLLN is "
+                f"{r['period']} ({s['_ildn']['strokes_in_box']:,} ILDN strokes). WWLLN is "
                 "the reference: the model was trained to reproduce it. U-Net: expected strokes (Poisson rate before "
                 "calibration).", col_format='l' + 'c' * len(order))
 
@@ -1539,21 +1630,24 @@ def T5_ildn(D):
 # ═════════════════════════════════════════════════════════════════════════════════════════════
 def A1_monthly(D):
     c = D.core()
-    months = sorted(set(c['months']))
+    groups = period_groups(c['months'])                   # months, or DJF/MAM/JJA/SON for the whole year
+    by_season = len(set(c['months'])) > 4
     lats, lons = c['lats'], c['lons']
     ext = [lons.min() - 0.125, lons.max() + 0.125, lats.min() - 0.125, lats.max() + 0.125]
-    fig, axs = map_axes(len(months), 2, W2, extra_h=0.3, hspace=0.12, extent=ext)
-    pairs = {m: (c['to_density'](c['obs'][c['months'] == m].mean(0)), c['to_density'](c['RAW']['U-Net'][c['months'] == m].mean(0)))
-             for m in months}
+    fig, axs = map_axes(len(groups), 2, W2, extra_h=0.3, hspace=0.12, extent=ext)
+    pairs = {g: (c['to_density'](c['obs'][sel].mean(0)), c['to_density'](c['RAW']['U-Net'][sel].mean(0)))
+             for g, sel in groups}
     pos = np.concatenate([v[v > 0] for pr in pairs.values() for v in pr])
     norm = mcolors.LogNorm(vmin=max(np.percentile(pos, 2), 1e-3), vmax=np.percentile(pos, 99.5))
-    for r, m in enumerate(months):
-        for j, (lab, f) in enumerate(zip(['Observed', 'U-Net'], pairs[m])):
-            im = draw_map(axs[r, j], c, np.where(f > 0, f, np.nan), LTG_CMAP, norm, ticks=(r == len(months) - 1, j == 0))
-            axs[r, j].set_title(f"{pd.Timestamp(2000, m, 1):%B}, {lab}", fontsize=7, loc='left', pad=2)
+    for r, (g, _) in enumerate(groups):
+        name = g if by_season else pd.to_datetime(g, format='%b').strftime('%B')
+        for j, (lab, f) in enumerate(zip(['Observed', 'U-Net'], pairs[g])):
+            im = draw_map(axs[r, j], c, np.where(f > 0, f, np.nan), LTG_CMAP, norm, ticks=(r == len(groups) - 1, j == 0))
+            axs[r, j].set_title(f"{name}, {lab}", fontsize=7, loc='left', pad=2)
     colorbar(fig, im, axs, 'strokes km$^{-2}$ yr$^{-1}$', extend='both', shrink=0.7)
     save(fig, 'A1_monthly_maps', "Observed (left) and U-Net (right; expected strokes = Poisson rate) mean stroke "
-                                 "density for each month of the test years.")
+                                 "density for each " + ("season (DJF = Dec–Feb, MAM = Mar–May, JJA = Jun–Aug, "
+                                 "SON = Sep–Nov)" if by_season else "month") + " of the test years.")
 
 
 def A2_correlations(D):
@@ -1743,9 +1837,10 @@ def O2_learning_curve(D):
     if 'CAPE × P' in c['M']:
         ax.axhline(np.nanmean(fss_series(c['obs'], c['M']['CAPE × P'])), color=COL['CAPE × P'], ls='--', lw=0.9, label='CAPE × P')
         ax.legend()
-    ax.set_xlabel('training seasons'); ax.set_ylabel('FSS (3 × 3 cells)'); ax.set_xticks(n)
-    save(fig, 'O2_learning_curve', "FSS on the test years against the number of training seasons (the most recent "
-                                   "seasons before the validation year; 95 % CI). The dashed line is calibrated CAPE × P.")
+    w = D.period_word
+    ax.set_xlabel(f'training {w}s'); ax.set_ylabel('FSS (3 × 3 cells)'); ax.set_xticks(n)
+    save(fig, 'O2_learning_curve', f"FSS on the test years against the number of training {w}s (the most recent "
+                                   f"{w}s before the validation year; 95 % CI). The dashed line is calibrated CAPE × P.")
 
 
 def O3_receptive_field(D):
@@ -1840,20 +1935,29 @@ def main():
     ap.add_argument('--train-log', help='printed output of train_unet.py, for A4')
     ap.add_argument('--audit-log', help='printed output of audit.py, for A5')
     ap.add_argument('--hourly-corr', action='store_true', help='A2: also correlate the other hourly variables (slow)')
-    ap.add_argument('--out', help=f'output folder (default {OUT_DIR})')
+    ap.add_argument('--months', type=int, nargs='+',
+                    help='which run: its months, like train_unet.py --months (default: ACTIVE_MONTHS in train_unet.py)')
+    ap.add_argument('--eval-months', type=int, nargs='+',
+                    help='score on these months only, e.g. 10 11 12 (whole-year model on Oct–Dec)')
+    ap.add_argument('--out', help=f'output folder (default {OUT_DIR}, + _<season> other than Oct–Dec, '
+                                  f'+ _eval<months> with --eval-months)')
     args = ap.parse_args()
-    if args.out:
-        OUT_DIR = args.out
     if args.list:
         for k, f in ITEMS.items():
             print(f"  {k:4s} {f.__name__}")
         return
     D = Data(args)
+    if args.out:
+        OUT_DIR = args.out
+    elif D.season != 'OND' or D.eval_months:
+        OUT_DIR = OUT_DIR + ('' if D.season == 'OND' else f'_{D.season}') + (
+            f'_eval{season_name(D.eval_months)}' if D.eval_months else '')
     todo = [k.upper() for k in args.only] if args.only else list(ITEMS)
     unknown = [k for k in todo if k not in ITEMS]
     if unknown:
         sys.exit(f"unknown items {unknown}; use --list")
-    print(f"predictions: {D.pred_path}\ndata folder: {D.data_dir}\noutput:      {OUT_DIR}", flush=True)
+    print(f"predictions: {D.pred_path}\ndata folder: {D.data_dir}\noutput:      {OUT_DIR}\n"
+          f"season:      {D.season}" + (f", scored on months {D.eval_months}" if D.eval_months else ''), flush=True)
     status = {}
     for k in todo:
         print(f"\n{k} — {ITEMS[k].__name__}", flush=True)
@@ -1867,13 +1971,30 @@ def main():
             status[k] = f'FAILED: {type(e).__name__}: {e}'
             traceback.print_exc()
     os.makedirs(OUT_DIR, exist_ok=True)
+    caps, nums, order = {}, {}, []
+    if args.only:            # keep the captions and numbers of the items not made this time
+        if os.path.exists(out('captions.md')):
+            for part in open(out('captions.md')).read().split('\n## ')[1:]:
+                name, _, text = part.partition('\n\n')
+                caps[name.strip()] = text.strip()
+                order.append(name.strip())
+        if os.path.exists(out('thesis_numbers.json')):
+            try:
+                nums = json.load(open(out('thesis_numbers.json')))
+            except Exception:
+                nums = {}
+    for name in MADE:
+        caps[name] = CAPTIONS.get(name, '')
+        if name not in order:
+            order.append(name)
+    nums.update(NUMBERS)
     with open(out('captions.md'), 'w') as fh:
         fh.write('# Draft captions\n\nGenerated by thesis_figures.py from '
                  f'{os.path.basename(D.pred_path or "?")}. Numbers are from this run; edit the wording freely.\n\n')
-        for name in MADE:
-            fh.write(f"## {name}\n\n{CAPTIONS.get(name, '')}\n\n")
+        for name in order:
+            fh.write(f"## {name}\n\n{caps[name]}\n\n")
     with open(out('thesis_numbers.json'), 'w') as fh:
-        json.dump(NUMBERS, fh, indent=1, default=lambda x: None if isinstance(x, float) and not np.isfinite(x) else str(x))
+        json.dump(nums, fh, indent=1, default=lambda x: None if isinstance(x, float) and not np.isfinite(x) else str(x))
     print('\n' + '=' * 70)
     for k, s in status.items():
         print(f"  {k:4s} {s}")

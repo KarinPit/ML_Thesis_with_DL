@@ -57,9 +57,12 @@ N_TRAIN_YEARS = None           # None = all training years; N = only the last N 
 
 SEED       = 13                # random seed (other seeds: --seed 14 …)
 
+ACTIVE_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]   # months used for training and testing.
+                               # [10, 11, 12] = the Oct–Dec runs (files named _OND_, as before);
+                               # the whole year writes files named _ALL_. Other months: --months 6 7 8
+
 DATA_DIR   = '/home/ec2-user/ML_Thesis_with_DL/data'
 DATA_PATH  = f'{DATA_DIR}/jones_israel_all_years.nc'            # hourly source file
-PREP_PATH  = f'{DATA_DIR}/jones_israel_{AGG_HOURS}h_OND.nc'      # cached aggregated file (one per window length)
 
 # ── command-line overrides (python train_unet.py --help) ──
 import argparse
@@ -68,6 +71,7 @@ _ap.add_argument('--lags', type=int, help='N_LAGS: number of windows the model s
 _ap.add_argument('--lag-control', action='store_true', help='LAG_CONTROL: earlier slots from random other windows')
 _ap.add_argument('--train-years', type=int, help='N_TRAIN_YEARS: train on the last N training years only (learning curve)')
 _ap.add_argument('--seed', type=int, help='SEED: random seed')
+_ap.add_argument('--months', type=int, nargs='+', help='ACTIVE_MONTHS, e.g. --months 10 11 12 (the Oct–Dec run)')
 _ap.add_argument('--retrain', action='store_true', help='RETRAIN = True')
 _args, _ = _ap.parse_known_args()
 if _args.lags:
@@ -80,19 +84,25 @@ if _args.seed is not None:
     SEED = _args.seed
 if _args.retrain:
     RETRAIN = True
+if _args.months:
+    ACTIVE_MONTHS = sorted(set(_args.months))
+
+# season in the file names: 'OND' (Oct–Dec, the original runs), 'ALL' (whole year), else e.g. 'M060708'
+SEASON     = ('OND' if ACTIVE_MONTHS == [10, 11, 12] else 'ALL' if ACTIVE_MONTHS == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+              else 'M' + ''.join([f'{m:02d}' for m in ACTIVE_MONTHS]))
+SEASON_TAG = '' if SEASON == 'OND' else f'_{SEASON}'          # in checkpoint names (Oct–Dec names unchanged)
+PREP_PATH  = f'{DATA_DIR}/jones_israel_{AGG_HOURS}h_{SEASON}.nc'  # cached aggregated file (one per window and season)
 
 # '' for the main run; e.g. '_lags3', '_lags3ctrl', '_train4y', '_seed14', '_lags3_seed14'
 RUN_TAG    = ((f'_lags{N_LAGS}' if N_LAGS > 1 else '') + ('ctrl' if N_LAGS > 1 and LAG_CONTROL else '')
               + (f'_train{N_TRAIN_YEARS}y' if N_TRAIN_YEARS else '') + (f'_seed{SEED}' if SEED != 13 else ''))
 RUN_NAME   = f'{AGG_HOURS}h_{LOSS}' + ('_jonesnorm' if LOSS == 'mse' and MSE_UNNORM == 'jones' else '') + RUN_TAG
-CKPT_PATH  = f'{DATA_DIR}/unet_{AGG_HOURS}h_{LOSS}{RUN_TAG}_best.pt'   # same model for both MSE un-normalisations
-OUT_PATH   = f'{DATA_DIR}/unet_{RUN_NAME}_OND_predictions.nc'
-EXTRA_PATH = f'{DATA_DIR}/unet_{RUN_NAME}_OND_predictions_extra.nc'  # predictions for EXTRA_PRED_YEARS
+CKPT_PATH  = f'{DATA_DIR}/unet_{AGG_HOURS}h_{LOSS}{SEASON_TAG}{RUN_TAG}_best.pt'   # same model for both MSE un-normalisations
+OUT_PATH   = f'{DATA_DIR}/unet_{RUN_NAME}_{SEASON}_predictions.nc'
+EXTRA_PATH = f'{DATA_DIR}/unet_{RUN_NAME}_{SEASON}_predictions_extra.nc'  # predictions for EXTRA_PRED_YEARS
 
 LAT_MIN, LAT_MAX = 30.0, 43.0
 LON_MIN, LON_MAX = 10.0, 39.0
-
-ACTIVE_MONTHS = [10, 11, 12]
 
 # Years left out completely (not used for training, validation or testing):
 #   2025 — precipitation is all zeros in the source file (IMERG data gap). After re-downloading
@@ -129,6 +139,8 @@ FSS_WINDOW    = 3
 
 if LOSS not in ('poisson', 'mse', 'log_mse'):
     sys.exit(f"LOSS must be 'poisson', 'mse' or 'log_mse' (got {LOSS!r})")
+if not (ACTIVE_MONTHS and set(ACTIVE_MONTHS) <= set(range(1, 13))):
+    sys.exit(f"ACTIVE_MONTHS must be months 1–12 (got {ACTIVE_MONTHS})")
 if not set(EXTRA_PRED_YEARS) <= set(EXCLUDE_YEARS):
     sys.exit(f"EXTRA_PRED_YEARS must be excluded years (never used for training or validation); "
              f"{sorted(set(EXTRA_PRED_YEARS) - set(EXCLUDE_YEARS))} are not in EXCLUDE_YEARS")

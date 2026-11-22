@@ -16,8 +16,9 @@ First-time setup:
   After that, subsequent runs authenticate automatically.
 
 Output:
-  data/imerg_hourly_{ts}.nc  — hourly precipitation (mm/hr) on 0.25° ERA5 grid
-                               (missing hours/pixels are NaN, never 0)
+  data/imerg_hourly_{year}.nc — hourly precipitation (mm/hr) on 0.25° ERA5 grid, one file per year
+                                (missing hours/pixels are NaN, never 0). Months are downloaded one at a
+                                time and merged into the yearly file; months already in it are skipped.
 
 Regridding (--regrid):
   conservative (default) — area-weighted average of the 0.1° IMERG cells inside each 0.25° cell
@@ -26,8 +27,9 @@ Regridding (--regrid):
                            only some years and want them consistent with files made earlier.
 
 Usage:
-    python download_imerg.py                                          # all years, skip existing files
-    python download_imerg.py --years 2025 --overwrite                 # re-download one year
+    python download_imerg.py                                          # all years, Sep–Dec, skip what exists
+    python download_imerg.py --years 2013 2014 --months 1 2 3 4 5 6 7 8   # add Jan–Aug to the yearly files
+    python download_imerg.py --years 2025 --overwrite                 # re-download Sep–Dec 2025
     python download_imerg.py --years 2025 --overwrite --regrid bilinear
 """
 
@@ -145,7 +147,7 @@ def crop_and_regrid(lats_src, lons_src, precip, target_lats, target_lons, method
 
 
 def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg',
-                   overwrite=False, regrid=REGRID):
+                   overwrite=False, regrid=REGRID, out_path=None):
     """
     Download IMERG half-hourly granules, aggregate to hourly, regrid, save NetCDF.
     Every hour of the period is written; hours without IMERG data are NaN.
@@ -155,7 +157,7 @@ def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg',
     start_year = pd.Timestamp(time_range.start).year
     end_year   = pd.Timestamp(time_range.stop).year
     ts = f"{start_year}_{end_year}" if end_year != start_year else str(start_year)
-    out_path = f'{out_dir}/imerg_hourly_{ts}.nc'
+    out_path = out_path or f'{out_dir}/imerg_hourly_{ts}.nc'
 
     if os.path.exists(out_path) and not overwrite:
         print(f"Output already exists: {out_path}  (use --overwrite to re-download)")
@@ -259,11 +261,54 @@ def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg',
     return out_path
 
 
+def _months_in_file(path):
+    """Months that are complete (every hour present, not all NaN) in an existing yearly file."""
+    if not os.path.exists(path):
+        return set()
+    with xr.open_dataset(path) as f:
+        t = pd.DatetimeIndex(f['time'].values)
+        has = ~np.isnan(f['precipitation'].values).all(axis=(1, 2))
+    per = pd.Series(has, index=t).groupby(t.to_period('M')).sum()
+    return {p.month for p, n in per.items() if n == p.days_in_month * 24}
+
+
+def merge_into_yearly(monthly_paths, path, replace=True):
+    """Merge monthly files into the yearly file (created if missing). The new months replace the same
+    hours in the file (a month is only downloaded when it is missing or incomplete there, or with
+    --overwrite). Written to a temporary file first, so an interrupted run never damages the file."""
+    new = xr.open_mfdataset(sorted(monthly_paths), combine='by_coords')
+    old = xr.open_dataset(path, chunks={'time': 168}) if os.path.exists(path) else None
+    if old is not None:
+        if replace:
+            old = old.sel(time=~old['time'].isin(new['time'].values))
+        both = xr.concat([old, new], dim='time', data_vars='all', coords='minimal', compat='override', join='outer')
+    else:
+        both = new
+    both = both.sortby('time')
+    _, first = np.unique(both['time'].values, return_index=True)
+    both = both.isel(time=np.sort(first))
+    both.attrs['missing_hours'] = int(np.isnan(both['precipitation'].values).all(axis=(1, 2)).sum())
+    tmp = path + '.tmp'
+    both.to_netcdf(tmp, format='NETCDF4', encoding={'precipitation': {'zlib': True, 'complevel': 1,
+                                                                      'chunksizes': (24,) + both['precipitation'].shape[1:]},
+                                                    'time': {'units': 'seconds since 1970-01-01', 'dtype': 'int64'}})
+    new.close()
+    if old is not None:
+        old.close()
+    os.replace(tmp, path)
+    months = sorted(set(pd.DatetimeIndex(both['time'].values).month))
+    print(f"  {os.path.basename(path)}: {both.sizes['time']} hours, months {months}, "
+          f"{both.attrs['missing_hours']} hours without data")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Download IMERG Final and regrid to the ERA5 grid.')
     parser.add_argument('--years', type=int, nargs='+', default=list(range(2013, 2026)),
-                        help='years to download, Sep–Dec of each (default: 2013–2025)')
-    parser.add_argument('--overwrite', action='store_true', help='replace existing output files')
+                        help='years to download (default: 2013–2025)')
+    parser.add_argument('--months', type=int, nargs='+', default=[9, 10, 11, 12],
+                        help='months to download, 1–12 (default: 9 10 11 12, as before)')
+    parser.add_argument('--overwrite', action='store_true',
+                        help='download the months again even if they are already in the yearly file')
     parser.add_argument('--regrid', choices=['conservative', 'bilinear'], default=REGRID,
                         help='regridding method (default: conservative)')
     args = parser.parse_args()
@@ -272,8 +317,22 @@ if __name__ == "__main__":
     earthaccess.login(strategy="netrc")
 
     for year in args.years:
-        time_range = slice(f'{year}-09-01', f'{year}-12-31')
-        print(f"\n{'='*60}")
-        print(f"Processing {time_range.start} → {time_range.stop}  (regrid: {args.regrid})")
-        print('='*60)
-        download_imerg(time_range=time_range, overwrite=args.overwrite, regrid=args.regrid)
+        year_path = f'data/imerg_hourly_{year}.nc'
+        have = set() if args.overwrite else _months_in_file(year_path)
+        todo = [m for m in sorted(set(args.months)) if m not in have]
+        print(f"\n{'='*60}\n{year}: months to download {todo}"
+              + (f" (already in {year_path}: {sorted(set(args.months) & have)})" if set(args.months) & have else '')
+              + f"  (regrid: {args.regrid})\n{'='*60}")
+        monthly = []
+        for m in todo:
+            last = pd.Timestamp(year, m, 1).days_in_month
+            mpath = f'data/imerg_hourly_{year}_{m:02d}.nc'          # one month; kept until merged
+            got = download_imerg(time_range=slice(f'{year}-{m:02d}-01', f'{year}-{m:02d}-{last}'),
+                                 overwrite=args.overwrite, regrid=args.regrid, out_path=mpath)
+            if got:
+                monthly.append(got)
+        if monthly:
+            print(f"Merging {len(monthly)} month(s) into {year_path} ...")
+            merge_into_yearly(monthly, year_path)
+            for f in monthly:
+                os.remove(f)
