@@ -18,6 +18,8 @@ import os
 import numpy as np
 import xarray as xr
 import gcsfs
+import dask
+from dask.diagnostics import ProgressBar
 from datetime import datetime
 import pandas as pd
 
@@ -106,7 +108,11 @@ def merge_into_yearly(new, path, replace=False):
            for v in both.data_vars}
     enc['time'] = TIME_ENCODING
     tmp = path + '.tmp'
-    both.to_netcdf(tmp, format='NETCDF4', encoding=enc)
+    # one piece at a time, no threads: reading and writing netCDF from several threads can hang on some
+    # netCDF/HDF5 builds, and it keeps memory low. The bar shows that it is moving (updated every 30 s).
+    print(f"  writing {os.path.basename(path)} ...", flush=True)
+    with dask.config.set(scheduler='synchronous'), ProgressBar(minimum=20, dt=30):
+        both.to_netcdf(tmp, format='NETCDF4', encoding=enc)
     if old is not None:
         old.close()
     os.replace(tmp, path)

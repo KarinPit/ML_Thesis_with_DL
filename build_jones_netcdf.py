@@ -40,7 +40,13 @@ import warnings
 import numpy as np
 import pandas as pd
 import xarray as xr
+import dask
 import dask.array as darr
+from dask.diagnostics import ProgressBar
+
+# one piece at a time, no threads: reading and writing netCDF from several threads can hang on some
+# netCDF/HDF5 builds, and it keeps memory low. The progress bars show that a long write is moving.
+dask.config.set(scheduler='synchronous')
 
 CHUNK = 24 * 7                        # hours per piece read/written at a time (one week)
 warnings.filterwarnings('ignore', message='The specified chunks separate the stored chunks')   # only slower, not wrong
@@ -326,7 +332,8 @@ for year in ALL_YEARS:
 
     print(f"  Saving → {out_path} (compressed) ...")
     tmp = out_path + '.tmp'
-    ds.to_netcdf(tmp, encoding=encoding_for(ds))   # written to a temporary file first: an interrupted run
+    with ProgressBar(minimum=20, dt=30):
+        ds.to_netcdf(tmp, encoding=encoding_for(ds))   # written to a temporary file first: an interrupted run
     ds.close()                                     # never leaves a half-written year file behind
     os.replace(tmp, out_path)
     saved.append(out_path)
@@ -354,7 +361,8 @@ for y in sorted(set(ds_all.time.dt.year.values)):
 
 # Written compressed to a temporary file, then renamed (whole years: allow up to an hour or two)
 tmp = ALL_YEARS_PATH + '.tmp'
-ds_all.to_netcdf(tmp, encoding=encoding_for(ds_all))
+with ProgressBar(minimum=20, dt=60):
+    ds_all.to_netcdf(tmp, encoding=encoding_for(ds_all))
 ds_all.close()
 os.replace(tmp, ALL_YEARS_PATH)
 print(f"Saved: {ALL_YEARS_PATH}")

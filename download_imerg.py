@@ -42,6 +42,8 @@ import pandas as pd
 import h5py
 from scipy.interpolate import RegularGridInterpolator
 import earthaccess
+import dask
+dask.config.set(scheduler='synchronous')   # merging: no threads (netCDF from several threads can hang)
 
 # ── Domain (match ERA5 grid exactly) ──────────────────────────────────────────
 LAT_MIN, LAT_MAX = 28.0, 43.435   # extended south to include Negev / Eilat (~29.5°N)
@@ -289,7 +291,8 @@ def merge_into_yearly(monthly_paths, path, replace=True):
     both = both.isel(time=np.sort(first))
     both.attrs['missing_hours'] = int(np.isnan(both['precipitation'].values).all(axis=(1, 2)).sum())
     tmp = path + '.tmp'
-    both.to_netcdf(tmp, format='NETCDF4', encoding={'precipitation': {'zlib': True, 'complevel': 1,
+    with dask.config.set(scheduler='synchronous'):       # no threads: can hang on some netCDF/HDF5 builds
+        both.to_netcdf(tmp, format='NETCDF4', encoding={'precipitation': {'zlib': True, 'complevel': 1,
                                                                       'chunksizes': (24,) + both['precipitation'].shape[1:]},
                                                     'time': {'units': 'seconds since 1970-01-01', 'dtype': 'int64'}})
     new.close()
