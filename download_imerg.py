@@ -26,11 +26,16 @@ Regridding (--regrid):
   bilinear               — the original method (point interpolation). Use this if you re-download
                            only some years and want them consistent with files made earlier.
 
-Usage:
+Usage (run it in the terminal; it prints what it is doing as it goes):
     python download_imerg.py                                          # all years, Sep–Dec, skip what exists
-    python download_imerg.py --years 2013 2014 --months 1 2 3 4 5 6 7 8   # add Jan–Aug to the yearly files
+    python download_imerg.py --years $(seq 2013 2024) --months $(seq 1 8)   # add Jan–Aug to the yearly files
     python download_imerg.py --years 2025 --overwrite                 # re-download Sep–Dec 2025
     python download_imerg.py --years 2025 --overwrite --regrid bilinear
+
+Ctrl+C stops it safely: finished months are kept (data/imerg_hourly_<year>_<month>.nc until they are merged),
+the yearly file is only replaced after a merge has fully finished, and running the same command again
+continues where it stopped. The same happens if the connection to the machine drops. Only one copy can run
+at a time.
 """
 
 import os
@@ -148,11 +153,17 @@ def crop_and_regrid(lats_src, lons_src, precip, target_lats, target_lons, method
         return np.where(cov >= 0.5, num / cov, np.nan)
 
 
+def _dur(sec):
+    sec = int(sec)
+    return f"{sec // 3600} h {sec % 3600 // 60:02d} min" if sec >= 3600 else f"{sec // 60} min {sec % 60:02d} s"
+
+
 def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg',
                    overwrite=False, regrid=REGRID, out_path=None):
     """
     Download IMERG half-hourly granules, aggregate to hourly, regrid, save NetCDF.
     Every hour of the period is written; hours without IMERG data are NaN.
+    Returns the file written, or None if there is no IMERG data for the period.
     """
     os.makedirs(tmp_dir, exist_ok=True)
 
@@ -160,70 +171,53 @@ def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg',
     end_year   = pd.Timestamp(time_range.stop).year
     ts = f"{start_year}_{end_year}" if end_year != start_year else str(start_year)
     out_path = out_path or f'{out_dir}/imerg_hourly_{ts}.nc'
+    label = (f"{pd.Timestamp(time_range.start):%b %Y}" if pd.Timestamp(time_range.start).to_period('M')
+             == pd.Timestamp(time_range.stop).to_period('M') else f"{time_range.start} → {time_range.stop}")
 
     if os.path.exists(out_path) and not overwrite:
-        print(f"Output already exists: {out_path}  (use --overwrite to re-download)")
+        print(f"  {label}: downloaded in an earlier run, kept", flush=True)
         return out_path
 
     # A date-only end ('2025-12-31') can be read as midnight, which drops the last day.
     t_end = time_range.stop if 'T' in str(time_range.stop) else f"{time_range.stop}T23:59:59"
 
-    # ── Search for granules ───────────────────────────────────────────────────
-    print(f"Searching IMERG granules: {time_range.start} → {time_range.stop}")
+    # ── Search and download the granules (earthaccess shows its own progress bars) ──
     results = earthaccess.search_data(
         short_name=IMERG_SHORT_NAME,
         version=IMERG_VERSION,
         temporal=(time_range.start, t_end),
         bounding_box=(LON_MIN, LAT_MIN, LON_MAX, LAT_MAX),
     )
-    print(f"Found {len(results)} granules (2 per hour × ~{len(results)//2} hours)")
+    print(f"  {label}: downloading {len(results)} half-hourly granules", flush=True)
+    files = sorted(earthaccess.download(results, tmp_dir))
 
-    # ── Download granules ─────────────────────────────────────────────────────
-    print(f"Downloading to {tmp_dir}/ ...")
-    files = earthaccess.download(results, tmp_dir)
-    files = sorted(files)
-    print(f"Downloaded {len(files)} files")
-
-    # ── Read, crop, regrid all granules ──────────────────────────────────────
-    print("Reading and regridding granules...")
-    # Inspect first file to verify structure
-    if files:
-        inspect_imerg_file(files[0])
-
+    # ── Read, crop, regrid ──
     records = []   # list of (time, precip_array)
-    for fpath in files:
+    n = len(files)
+    for k, fpath in enumerate(files, 1):
         try:
             t, lats_src, lons_src, precip = read_imerg_granule(fpath)
             p_regrid = crop_and_regrid(lats_src, lons_src, precip, ERA5_LATS, ERA5_LONS, method=regrid)
             records.append((t, p_regrid))
         except Exception as e:
-            print(f"  WARNING: could not read {os.path.basename(fpath)}: {e}")
-
-    print(f"Successfully read {len(records)} / {len(files)} granules")
+            print(f"\n    WARNING: could not read {os.path.basename(fpath)}: {e}")
+        if k == n or k % max(1, n // 50) == 0:
+            print(f"\r  {label}: regridding  {k}/{n} granules ({100 * k // max(n, 1)} %)", end='', flush=True)
+    print(flush=True)
     if not records:
-        print(f"ERROR: no IMERG data for {time_range.start} → {time_range.stop}. IMERG Final is "
-              f"published ~3.5 months after the fact — this period may not be available yet.")
+        print(f"  {label}: ERROR — no IMERG data. IMERG Final is published ~3.5 months after the fact; "
+              f"this period may not be available yet.", flush=True)
         return None
 
-    # ── Aggregate two 30-min granules → one hourly value ─────────────────────
-    print("Aggregating to hourly...")
-    df_times = pd.DatetimeIndex([r[0] for r in records])
-    hour_keys = df_times.floor('h')
-    unique_hours = sorted(set(hour_keys))
+    # ── Aggregate two 30-min granules → one hourly value (mean of the 30-min rates) ──
+    by_hour = {}
+    for t, arr in records:
+        by_hour.setdefault(pd.Timestamp(t).floor('h'), []).append(arr)
+    hourly_times = sorted(by_hour)
+    with warnings.catch_warnings():               # all-NaN pixels → NaN, silently
+        warnings.simplefilter('ignore', RuntimeWarning)
+        precip_arr = np.stack([np.nanmean(np.stack(by_hour[h]), axis=0) for h in hourly_times])
 
-    hourly_precip = []
-    hourly_times  = []
-    for hr in unique_hours:
-        idx = [i for i, h in enumerate(hour_keys) if h == hr]
-        stacked = np.stack([records[i][1] for i in idx], axis=0)
-        with warnings.catch_warnings():               # all-NaN pixels → NaN, silently
-            warnings.simplefilter('ignore', RuntimeWarning)
-            hourly_precip.append(np.nanmean(stacked, axis=0))   # mean of 30-min rates → hourly rate
-        hourly_times.append(hr)
-
-    precip_arr = np.stack(hourly_precip, axis=0)   # (time, lat, lon)
-
-    # ── Build xarray Dataset and save ────────────────────────────────────────
     ds_out = xr.Dataset(
         {'precipitation': (['time', 'latitude', 'longitude'], precip_arr,
                            {'long_name': 'IMERG calibrated precipitation rate',
@@ -241,25 +235,17 @@ def download_imerg(time_range, out_dir='data', tmp_dir='data/tmp_imerg',
     ds_out = ds_out.reindex(time=expected)
     missing = np.isnan(ds_out['precipitation'].values).all(axis=(1, 2))
     if missing.any():
-        by_month = pd.DatetimeIndex(expected[missing]).to_period('M').value_counts().sort_index()
-        print(f"WARNING: {int(missing.sum())} of {len(expected)} hours have no IMERG data (saved as NaN):")
-        for month, n in by_month.items():
-            print(f"    {month}: {n} hours missing")
-        print("  IMERG Final appears ~3.5 months after the fact; re-run later with --overwrite.")
+        print(f"  {label}: WARNING — {int(missing.sum())} of {len(expected)} hours have no IMERG data (kept as NaN). "
+              f"IMERG Final appears ~3.5 months after the fact; re-run later with --overwrite if this is recent.",
+              flush=True)
     ds_out.attrs['regrid'] = regrid
     ds_out.attrs['missing_hours'] = int(missing.sum())
 
-    print(f"Saving to {out_path}...")
-    ds_out.to_netcdf(out_path, format='NETCDF4')
-
-    # ── Clean up raw HDF5 files ───────────────────────────────────────────────
-    print("Cleaning up raw granule files...")
-    for f in files:
+    ds_out.to_netcdf(out_path + '.part', format='NETCDF4')
+    os.replace(out_path + '.part', out_path)              # a month counts only when complete
+    for f in files:                                       # raw granules are no longer needed
         if os.path.exists(f):
             os.remove(f)
-
-    print(f"\nDone! {len(expected)} hourly timesteps saved to {out_path} "
-          f"({len(hourly_times)} with data, {int(missing.sum())} missing)")
     return out_path
 
 
@@ -300,11 +286,12 @@ def merge_into_yearly(monthly_paths, path, replace=True):
         old.close()
     os.replace(tmp, path)
     months = sorted(set(pd.DatetimeIndex(both['time'].values).month))
-    print(f"  {os.path.basename(path)}: {both.sizes['time']} hours, months {months}, "
-          f"{both.attrs['missing_hours']} hours without data")
+    print(f"    {os.path.basename(path)}: months {months[0]}–{months[-1]} ({len(months)}), {both.sizes['time']} hours, "
+          f"{both.attrs['missing_hours']} without data", flush=True)
 
 
 if __name__ == "__main__":
+    import sys, time
     parser = argparse.ArgumentParser(description='Download IMERG Final and regrid to the ERA5 grid.')
     parser.add_argument('--years', type=int, nargs='+', default=list(range(2013, 2026)),
                         help='years to download (default: 2013–2025)')
@@ -315,27 +302,65 @@ if __name__ == "__main__":
     parser.add_argument('--regrid', choices=['conservative', 'bilinear'], default=REGRID,
                         help='regridding method (default: conservative)')
     args = parser.parse_args()
+    months = sorted(set(args.months))
 
-    # Authenticate once — credentials saved to ~/.netrc, no prompts on subsequent runs
-    earthaccess.login(strategy="netrc")
+    # only one copy at a time (two copies would write the same files)
+    os.makedirs('data', exist_ok=True)
+    lock = 'data/.download_imerg.lock'
+    if os.path.exists(lock):
+        pid = int(open(lock).read().strip() or 0)
+        if pid and os.path.exists(f'/proc/{pid}') and 'download_imerg' in open(f'/proc/{pid}/cmdline').read():
+            sys.exit(f"Another IMERG download is already running (process {pid}). Stop it first with:  kill {pid}")
+    open(lock, 'w').write(str(os.getpid()))
 
-    for year in args.years:
-        year_path = f'data/imerg_hourly_{year}.nc'
-        have = set() if args.overwrite else _months_in_file(year_path)
-        todo = [m for m in sorted(set(args.months)) if m not in have]
-        print(f"\n{'='*60}\n{year}: months to download {todo}"
-              + (f" (already in {year_path}: {sorted(set(args.months) & have)})" if set(args.months) & have else '')
-              + f"  (regrid: {args.regrid})\n{'='*60}")
-        monthly = []
-        for m in todo:
-            last = pd.Timestamp(year, m, 1).days_in_month
-            mpath = f'data/imerg_hourly_{year}_{m:02d}.nc'          # one month; kept until merged
-            got = download_imerg(time_range=slice(f'{year}-{m:02d}-01', f'{year}-{m:02d}-{last}'),
-                                 overwrite=args.overwrite, regrid=args.regrid, out_path=mpath)
-            if got:
-                monthly.append(got)
-        if monthly:
-            print(f"Merging {len(monthly)} month(s) into {year_path} ...")
-            merge_into_yearly(monthly, year_path)
-            for f in monthly:
-                os.remove(f)
+    plan = {y: [m for m in months if m not in (set() if args.overwrite else _months_in_file(f'data/imerg_hourly_{y}.nc'))]
+            for y in args.years}
+    total = sum(len(v) for v in plan.values())
+    print(f"IMERG download (regrid: {args.regrid})\n  years {args.years[0]}–{args.years[-1]}, months {months}: "
+          f"{total} month(s) to download\n  into data/imerg_hourly_<year>.nc\n"
+          "  Ctrl+C stops it safely; run the same command again to continue.", flush=True)
+
+    t_all, done, spent = time.time(), 0, 0.0
+    try:
+        if total:
+            earthaccess.login(strategy="netrc")      # credentials from ~/.netrc, no prompt
+        for year in args.years:
+            year_path = f'data/imerg_hourly_{year}.nc'
+            todo = plan[year]
+            print(f"\n── {year} " + '─' * 60, flush=True)
+            if not todo:
+                print(f"  months {months} are already in {year_path} — nothing to do.", flush=True)
+                continue
+            print(f"  to download: months {todo}", flush=True)
+            t_year, monthly = time.time(), []
+            for m in todo:
+                t0 = time.time()
+                last = pd.Timestamp(year, m, 1).days_in_month
+                mpath = f'data/imerg_hourly_{year}_{m:02d}.nc'          # one month; kept until merged
+                existed = os.path.exists(mpath) and not args.overwrite
+                got = download_imerg(time_range=slice(f'{year}-{m:02d}-01', f'{year}-{m:02d}-{last}'),
+                                     overwrite=args.overwrite, regrid=args.regrid, out_path=mpath)
+                if existed:
+                    total -= 1
+                elif got:
+                    done += 1
+                    spent += time.time() - t0
+                    left = total - done
+                    print(f"  {pd.Timestamp(year, m, 1):%b %Y}: done in {_dur(time.time() - t0)}  —  {done}/{total} "
+                          f"months downloaded" + (f", about {_dur(left * spent / done)} left" if left else ''), flush=True)
+                if got:
+                    monthly.append(got)
+            if monthly:
+                print(f"  merging {len(monthly)} month(s) into {year_path} ...", flush=True)
+                merge_into_yearly(monthly, year_path)
+                for f in monthly:
+                    os.remove(f)
+            print(f"  {year} done in {_dur(time.time() - t_year)}", flush=True)
+        print(f"\nAll done in {_dur(time.time() - t_all)}.", flush=True)
+    except KeyboardInterrupt:
+        print("\n\nStopped (Ctrl+C). Months that finished are kept; the yearly files are unchanged unless their "
+              "merge had finished.\nRun the same command again to continue.", flush=True)
+        sys.exit(130)
+    finally:
+        if os.path.exists(lock):
+            os.remove(lock)

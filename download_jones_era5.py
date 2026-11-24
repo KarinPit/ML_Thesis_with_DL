@@ -5,9 +5,13 @@ Downloads month by month and adds the months to one file per year (data/jones_si
 data/jones_pressure_level_{year}.nc). Months already in a yearly file are skipped, so the script can be
 stopped and started again, and new months (e.g. January–August) are merged into the existing Sep–Dec files.
 
-Usage:
-    python download_jones_era5.py --years 2013 2014 --months 1 2 3 4 5 6 7 8 --model-vars-only
+Usage (run it in the terminal; it prints what it is doing as it goes):
+    python download_jones_era5.py --years $(seq 2013 2024) --months $(seq 1 8) --model-vars-only
     python download_jones_era5.py --years 2025 --months 9 10 11 12          # all variables, as before
+
+Ctrl+C stops it safely: months that finished downloading are kept (data/tmp_jones_*), the yearly files are
+only replaced after a merge has fully finished, and running the same command again continues where it
+stopped. The same happens if the connection to the machine drops. Only one copy can run at a time.
 
 --model-vars-only  downloads only the variables train_unet.py uses (CAPE, K index, Total Totals, total column
                    cloud ice and liquid, land-sea mask, cloud ice at 500/1000 hPa). The pressure-level fields
@@ -17,6 +21,7 @@ Usage:
 import os
 import numpy as np
 import xarray as xr
+import time
 import gcsfs
 import dask
 from dask.diagnostics import ProgressBar
@@ -110,14 +115,16 @@ def merge_into_yearly(new, path, replace=False):
     tmp = path + '.tmp'
     # one piece at a time, no threads: reading and writing netCDF from several threads can hang on some
     # netCDF/HDF5 builds, and it keeps memory low. The bar shows that it is moving (updated every 30 s).
-    print(f"  writing {os.path.basename(path)} ...", flush=True)
-    with dask.config.set(scheduler='synchronous'), ProgressBar(minimum=20, dt=30):
+    t0 = time.time()
+    print(f"    writing {os.path.basename(path)}", flush=True)
+    with dask.config.set(scheduler='synchronous'), ProgressBar(dt=2):
         both.to_netcdf(tmp, format='NETCDF4', encoding=enc)
     if old is not None:
         old.close()
     os.replace(tmp, path)
     months = sorted(set(pd.DatetimeIndex(both['time'].values).month))
-    print(f"  {os.path.basename(path)}: {both.sizes['time']} hours, months {months}")
+    print(f"    {os.path.basename(path)}: months {months[0]}–{months[-1]} ({len(months)}), {both.sizes['time']} hours, "
+          f"{os.path.getsize(path) / 1e9:.1f} GB, {_dur(time.time() - t0)}", flush=True)
 
 
 def months_in_file(path):
@@ -130,7 +137,35 @@ def months_in_file(path):
     return {p.month for p, n in per.items() if n == p.days_in_month * 24}
 
 
-def download_era5(year, months, out_dir='data', model_vars_only=False):
+def _dur(sec):
+    sec = int(sec)
+    return f"{sec // 3600} h {sec % 3600 // 60:02d} min" if sec >= 3600 else f"{sec // 60} min {sec % 60:02d} s"
+
+
+def open_arco():
+    print("Opening ARCO-ERA5 on Google Cloud ...", flush=True)
+    fs = gcsfs.GCSFileSystem(token='anon')
+    store = fs.get_mapper('gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3')
+    return xr.open_zarr(store, consolidated=True)
+
+
+class Clock:
+    """Months done so far and their average time, for the 'time left' estimate."""
+    def __init__(self, total):
+        self.total, self.done, self.spent, self.t0 = total, 0, 0.0, time.time()
+
+    def month_done(self, sec):
+        self.done += 1
+        self.spent += sec
+        left = self.total - self.done
+        return (f"{self.done}/{self.total} months downloaded"
+                + (f", about {_dur(left * self.spent / self.done)} left" if left else ''))
+
+
+PARTS = []          # the .part file being written right now (removed if you press Ctrl+C)
+
+
+def download_era5(year, months, out_dir='data', model_vars_only=False, ds=None, clock=None):
     """Download the given months of one year and merge them into the yearly files."""
     sl_vars = MODEL_SINGLE_VARS if model_vars_only else SINGLE_LEVEL_VARS
     pl_vars = MODEL_PRESSURE_VARS if model_vars_only else PRESSURE_LEVEL_VARS
@@ -140,17 +175,16 @@ def download_era5(year, months, out_dir='data', model_vars_only=False):
 
     have = months_in_file(single_path) & months_in_file(pressure_path)
     todo = [m for m in months if m not in have]
+    print(f"\n── {year} " + '─' * 60, flush=True)
     if not todo:
-        print(f"{year}: months {months} already in the yearly files — nothing to do.")
+        print(f"  months {months} are already in the yearly files — nothing to do.", flush=True)
         return
-    print(f"\n{year}: downloading months {todo}" + (f" (already there: {sorted(set(months) & have)})" if set(months) & have else '')
-          + (' — model variables only' if model_vars_only else ''))
-
-    fs = gcsfs.GCSFileSystem(token='anon')
-    store = fs.get_mapper('gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3')
-    ds = xr.open_zarr(store, consolidated=True)
+    print(f"  to download: months {todo}" + (f"   (already there: {sorted(set(months) & have)})" if set(months) & have else ''),
+          flush=True)
+    ds = ds if ds is not None else open_arco()
     spatial = dict(latitude=slice(LAT_MAX, LAT_MIN), longitude=slice(LON_MIN, LON_MAX))
     time_enc = {'time': TIME_ENCODING}
+    t_year = time.time()
 
     single_monthly, pressure_monthly = [], []
     for m in todo:
@@ -161,22 +195,33 @@ def download_era5(year, months, out_dir='data', model_vars_only=False):
         tmp_single   = f'{out_dir}/tmp_jones_single_{month_str}{tag}.nc'
         tmp_pressure = f'{out_dir}/tmp_jones_pressure_{month_str}{tag}.nc'
         if os.path.exists(tmp_single) and os.path.exists(tmp_pressure):
-            print(f"  {month_str} already downloaded, skipping.")
+            print(f"  {month_start:%b %Y}: downloaded in an earlier run, kept", flush=True)
+            if clock:
+                clock.total -= 1
         else:
-            print(f"  Downloading {month_str}...", flush=True)
-            ds[sl_vars].sel(time=month_slice, **spatial).to_netcdf(tmp_single + '.part', format='NETCDF4',
-                                                                   encoding=time_enc)
-            (ds[pl_vars].sel(time=month_slice, **spatial).sel(level=PRESSURE_LEVELS)
-             ).to_netcdf(tmp_pressure + '.part', format='NETCDF4', encoding=time_enc)
-            os.replace(tmp_single + '.part', tmp_single)          # a month counts only when complete
-            os.replace(tmp_pressure + '.part', tmp_pressure)
+            t0 = time.time()
+            for label, data, tmp in (
+                    (f'{len(sl_vars)} single-level fields', ds[sl_vars].sel(time=month_slice, **spatial), tmp_single),
+                    (f'{len(pl_vars)} pressure-level field(s) at {PRESSURE_LEVELS} hPa',
+                     ds[pl_vars].sel(time=month_slice, **spatial).sel(level=PRESSURE_LEVELS), tmp_pressure)):
+                if os.path.exists(tmp):
+                    continue
+                print(f"  {month_start:%b %Y}: {label}", flush=True)
+                PARTS[:] = [tmp + '.part']
+                with ProgressBar(dt=2):
+                    data.to_netcdf(tmp + '.part', format='NETCDF4', encoding=time_enc)
+                os.replace(tmp + '.part', tmp)          # a month counts only when complete
+                PARTS[:] = []
+            sec = time.time() - t0
+            size = (os.path.getsize(tmp_single) + os.path.getsize(tmp_pressure)) / 1e6
+            print(f"  {month_start:%b %Y}: done in {_dur(sec)} ({size:.0f} MB)"
+                  + (f"  —  {clock.month_done(sec)}" if clock else ''), flush=True)
         single_monthly.append(tmp_single)
         pressure_monthly.append(tmp_pressure)
 
-    print(f"Merging {len(todo)} month(s) into the yearly files...")
+    print(f"  merging {len(todo)} month(s) into the yearly files ...", flush=True)
     sl = xr.open_mfdataset(single_monthly,   combine='by_coords', chunks={'time': 168})
     pl = xr.open_mfdataset(pressure_monthly, combine='by_coords', chunks={'time': 168})
-
     # derived variables, where their ingredients were downloaded
     if {'zero_degree_level', 'cloud_base_height'} <= set(sl.data_vars):
         sl['wcd'] = sl['zero_degree_level'] - sl['cloud_base_height']          # warm cloud depth [m]
@@ -200,14 +245,13 @@ def download_era5(year, months, out_dir='data', model_vars_only=False):
     merge_into_yearly(pl, pressure_path)
     sl.close(); pl.close()
 
-    print("Cleaning up temporary monthly files...")
-    for f in single_monthly + pressure_monthly:
+    for f in single_monthly + pressure_monthly:          # the months are now in the yearly files
         os.remove(f)
-    print(f"Done {year}.")
+    print(f"  {year} done in {_dur(time.time() - t_year)}", flush=True)
 
 
 if __name__ == "__main__":
-    import argparse
+    import argparse, sys
     ap = argparse.ArgumentParser(description='Download ERA5 (ARCO) months and merge them into the yearly files.')
     ap.add_argument('--years', type=int, nargs='+', default=list(range(2013, 2025)),
                     help='years (default 2013–2024)')
@@ -217,5 +261,42 @@ if __name__ == "__main__":
                     help='only the variables train_unet.py uses (much faster)')
     ap.add_argument('--out-dir', default='data')
     args = ap.parse_args()
-    for year in args.years:
-        download_era5(year, sorted(set(args.months)), out_dir=args.out_dir, model_vars_only=args.model_vars_only)
+    months = sorted(set(args.months))
+
+    # only one copy at a time (two copies would write the same files)
+    lock = os.path.join(args.out_dir, '.download_era5.lock')
+    if os.path.exists(lock):
+        pid = int(open(lock).read().strip() or 0)
+        if pid and os.path.exists(f'/proc/{pid}') and 'download_jones_era5' in open(f'/proc/{pid}/cmdline').read():
+            sys.exit(f"Another ERA5 download is already running (process {pid}). Stop it first with:  kill {pid}")
+    open(lock, 'w').write(str(os.getpid()))
+
+    # the plan: what is missing in each yearly file
+    plan = {}
+    for y in args.years:
+        have = (months_in_file(f'{args.out_dir}/jones_single_level_{y}.nc')
+                & months_in_file(f'{args.out_dir}/jones_pressure_level_{y}.nc'))
+        plan[y] = [m for m in months if m not in have]
+    n = sum(len(v) for v in plan.values())
+    print('ERA5 download' + (' — model variables only' if args.model_vars_only else ' — all variables')
+          + f"\n  years {args.years[0]}–{args.years[-1]}, months {months}: {n} month(s) to download"
+          + f"\n  into {args.out_dir}/jones_single_level_<year>.nc and jones_pressure_level_<year>.nc"
+          + "\n  Ctrl+C stops it safely; run the same command again to continue.", flush=True)
+    t_all = time.time()
+    try:
+        arco = open_arco() if n else None
+        clock = Clock(n)
+        for year in args.years:
+            download_era5(year, months, out_dir=args.out_dir, model_vars_only=args.model_vars_only,
+                          ds=arco, clock=clock)
+        print(f"\nAll done in {_dur(time.time() - t_all)}.", flush=True)
+    except KeyboardInterrupt:
+        for f in PARTS:
+            if os.path.exists(f):
+                os.remove(f)
+        print("\n\nStopped (Ctrl+C). Months that finished are kept; the yearly files are unchanged unless their "
+              "merge had finished.\nRun the same command again to continue.", flush=True)
+        sys.exit(130)
+    finally:
+        if os.path.exists(lock):
+            os.remove(lock)

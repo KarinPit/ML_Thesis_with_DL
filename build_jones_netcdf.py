@@ -332,7 +332,7 @@ for year in ALL_YEARS:
 
     print(f"  Saving → {out_path} (compressed) ...")
     tmp = out_path + '.tmp'
-    with ProgressBar(minimum=20, dt=30):
+    with ProgressBar(dt=5):
         ds.to_netcdf(tmp, encoding=encoding_for(ds))   # written to a temporary file first: an interrupted run
     ds.close()                                     # never leaves a half-written year file behind
     os.replace(tmp, out_path)
@@ -361,7 +361,7 @@ for y in sorted(set(ds_all.time.dt.year.values)):
 
 # Written compressed to a temporary file, then renamed (whole years: allow up to an hour or two)
 tmp = ALL_YEARS_PATH + '.tmp'
-with ProgressBar(minimum=20, dt=60):
+with ProgressBar(dt=5):
     ds_all.to_netcdf(tmp, encoding=encoding_for(ds_all))
 ds_all.close()
 os.replace(tmp, ALL_YEARS_PATH)
